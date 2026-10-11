@@ -21,6 +21,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile --prefer-offline
       - run: cp wrangler.example.jsonc wrangler.jsonc
+      - name: Configure preview auth URL
+        env:
+          PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+        run: |
+          preview_url="https://${PREVIEW_NAME}-splitpro.andrepascoa.workers.dev"
+          sed -i "s|https://replace-with-this-preview-url|${preview_url}|g" wrangler.jsonc
       - run: SKIP_ENV_VALIDATION=1 pnpm build
       - name: Apply preview database migrations
         run: pnpm exec wrangler d1 migrations apply DB --remote --preview --config wrangler.jsonc
