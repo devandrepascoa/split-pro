@@ -27,7 +27,7 @@ import { CurrencyInput } from '../ui/currency-input';
 import { CurrencyConversion } from '../Friend/CurrencyConversion';
 import { currencyConversion } from '~/utils/numbers';
 import { CurrencyConversionIcon } from '../ui/categoryIcons';
-import { useSession } from 'next-auth/react';
+import { useSession } from '~/lib/auth-client';
 
 export const AddOrEditExpensePage: React.FC<{
   enableSendingInvites: boolean;

@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '~/server/db/types';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 jest.mock('~/server/db', () => ({

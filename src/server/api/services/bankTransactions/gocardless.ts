@@ -4,7 +4,10 @@ import { TRPCError } from '@trpc/server';
 import { format, subDays } from 'date-fns';
 import NordigenClient, { type Transaction } from 'nordigen-node';
 import { env } from '~/env';
+import { and, eq } from 'drizzle-orm';
+
 import { db } from '~/server/db';
+import { cachedBankData } from '~/server/db/schema';
 import type { TransactionOutput, TransactionOutputItem } from '~/types/bank.types';
 
 abstract class AbstractBankProvider {
@@ -64,8 +67,11 @@ export class GoCardlessService extends AbstractBankProvider {
 
     const requisitionData = await this.client.requisition.getRequisitionById(requisitionId);
 
-    const cachedData = await db.cachedBankData.findUnique({
-      where: { obapiProviderId: requisitionId, userId },
+    const cachedData = await db.query.cachedBankData.findFirst({
+      where: and(
+        eq(cachedBankData.obapiProviderId, requisitionId),
+        eq(cachedBankData.userId, userId),
+      ),
     });
 
     if (cachedData) {
@@ -112,24 +118,16 @@ export class GoCardlessService extends AbstractBankProvider {
 
     const formattedTransactions: TransactionOutput = this.mergeTransactions(allTransactions);
 
-    const data = {
-      obapiProviderId: requisitionId ?? '',
-      data: JSON.stringify(formattedTransactions),
-      lastFetched: new Date(),
-      user: {
-        connect: {
-          id: userId,
-        },
-      },
-    };
-
-    await db.cachedBankData.upsert({
-      where: { obapiProviderId: requisitionId ?? '', userId },
-      create: data,
-      update: {
-        lastFetched: new Date(),
-      },
-    });
+    const serialized = JSON.stringify(formattedTransactions);
+    const now = new Date();
+    await db
+      .insert(cachedBankData)
+      .values({ obapiProviderId: requisitionId ?? '', data: serialized, lastFetched: now, userId })
+      .onConflictDoUpdate({
+        target: cachedBankData.obapiProviderId,
+        set: { data: serialized, lastFetched: now, updatedAt: now },
+        where: eq(cachedBankData.userId, userId),
+      });
 
     return formattedTransactions;
   }

@@ -1,4 +1,4 @@
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 import { type inferRouterOutputs } from '@trpc/server';
 import Image from 'next/image';
 import Link from 'next/link';

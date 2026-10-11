@@ -1,11 +1,16 @@
 import { TRPCError } from '@trpc/server';
+import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 
 import { simplifyDebts } from '~/lib/simplify';
 import { createTRPCRouter, groupProcedure, protectedProcedure } from '~/server/api/trpc';
 import { sendGroupSimplifyDebtsToggleNotification } from '~/server/api/services/notificationService';
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
+import { runBatch } from '~/server/db/batch';
+import { balanceView, expenses, groupDefaultSplits, groupUsers, groups } from '~/server/db/schema';
+import type { DB } from '~/server/db';
+import { runInBackground } from '~/server/observability/background';
 import {
   defaultSplitInputSchema,
   deserializeDefaultSplit,
@@ -17,42 +22,32 @@ export const groupRouter = createTRPCRouter({
   create: protectedProcedure
     .input(z.object({ name: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const group = await ctx.db.group.create({
-        data: {
-          name: input.name,
-          publicId: nanoid(),
+      const publicId = nanoid();
+      const [[group]] = (await runBatch([
+        ctx.db
+          .insert(groups)
+          .values({ name: input.name, publicId, userId: ctx.session.user.id })
+          .returning(),
+        ctx.db.insert(groupUsers).values({
+          groupId: sql`(SELECT ${groups.id} FROM ${groups} WHERE ${groups.publicId} = ${publicId})`,
           userId: ctx.session.user.id,
-          groupUsers: {
-            create: {
-              userId: ctx.session.user.id,
-            },
-          },
-        },
-      });
+        }),
+      ])) as [(typeof groups.$inferSelect)[]];
 
-      return group;
+      return group!;
     }),
 
   getAllGroups: protectedProcedure.query(async ({ ctx }) => {
-    const groups = await ctx.db.groupUser.findMany({
-      where: {
-        userId: ctx.session.user.id,
-      },
-      include: {
+    const userGroups = await ctx.db.query.groupUsers.findMany({
+      where: eq(groupUsers.userId, ctx.session.user.id),
+      with: {
         group: {
-          include: {
-            groupUsers: {
-              include: {
-                user: true,
-              },
-            },
-            groupDefaultSplit: true,
-          },
+          with: { groupUsers: { with: { user: true } }, groupDefaultSplit: true },
         },
       },
     });
 
-    return groups.map((groupUser) => ({
+    return userGroups.map((groupUser) => ({
       ...groupUser,
       group: {
         ...groupUser.group,
@@ -69,30 +64,37 @@ export const groupRouter = createTRPCRouter({
   getAllGroupsWithBalances: protectedProcedure
     .input(z.object({ getArchived: z.boolean() }).optional())
     .query(async ({ ctx, input }) => {
-      const groups = await ctx.db.groupUser.findMany({
-        where: {
-          userId: ctx.session.user.id,
+      const me = ctx.session.user.id;
+      const memberships = await ctx.db.query.groupUsers.findMany({
+        where: eq(groupUsers.userId, me),
+        with: {
           group: {
-            archivedAt: input?.getArchived ? { not: null } : null,
-          },
-        },
-        include: {
-          group: {
-            include: {
-              groupBalances: {
-                where: { userId: ctx.session.user.id },
-              },
-              // We can sort by group balance view instead
-              expenses: {
-                orderBy: {
-                  createdAt: 'desc',
-                },
-                take: 1,
-              },
-            },
+            with: { expenses: { orderBy: (e) => [desc(e.createdAt)], limit: 1 } },
           },
         },
       });
+      const filtered = memberships.filter((m) =>
+        input?.getArchived ? null !== m.group.archivedAt : null === m.group.archivedAt,
+      );
+      const myBalances =
+        0 === filtered.length
+          ? []
+          : await ctx.db
+              .select()
+              .from(balanceView)
+              .where(
+                and(
+                  eq(balanceView.userId, me),
+                  inArray(
+                    balanceView.groupId,
+                    filtered.map((m) => m.groupId),
+                  ),
+                ),
+              );
+      const groups = filtered.map((m) => ({
+        ...m,
+        group: { ...m.group, groupBalances: myBalances.filter((b) => b.groupId === m.groupId) },
+      }));
 
       const sortedGroupsByLatestExpense = groups.sort((a, b) => {
         const aDate = a.group.expenses[0]?.createdAt ?? new Date(0);
@@ -119,43 +121,28 @@ export const groupRouter = createTRPCRouter({
   joinGroup: protectedProcedure
     .input(z.object({ groupId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const group = await ctx.db.group.findFirst({
-        where: {
-          publicId: input.groupId,
-        },
+      const group = await ctx.db.query.groups.findFirst({
+        where: eq(groups.publicId, input.groupId),
       });
 
       if (!group) {
         throw new Error('Group not found');
       }
 
-      await ctx.db.groupUser.create({
-        data: {
-          groupId: group.id,
-          userId: ctx.session.user.id,
-        },
-      });
-
-      await ctx.db.groupDefaultSplit.deleteMany({ where: { groupId: group.id } });
+      await runBatch([
+        ctx.db.insert(groupUsers).values({ groupId: group.id, userId: ctx.session.user.id }),
+        ctx.db.delete(groupDefaultSplits).where(eq(groupDefaultSplits.groupId, group.id)),
+      ]);
 
       return group;
     }),
 
   getGroupDetails: groupProcedure.query(async ({ input, ctx }) => {
-    const group = await ctx.db.group.findUnique({
-      where: {
-        id: input.groupId,
-      },
-      include: {
-        groupUsers: {
-          include: {
-            user: true,
-          },
-        },
-        groupBalances: true,
-        groupDefaultSplit: true,
-      },
+    const found = await ctx.db.query.groups.findFirst({
+      where: eq(groups.id, input.groupId),
+      with: { groupUsers: { with: { user: true } }, groupDefaultSplit: true },
     });
+    const group = found && { ...found, groupBalances: await groupBalancesOf(ctx.db, found.id) };
 
     if (!group) {
       return group;
@@ -179,19 +166,22 @@ export const groupRouter = createTRPCRouter({
   }),
 
   getGroupTotals: groupProcedure.query(async ({ input, ctx }) => {
-    const totals = await ctx.db.expense.groupBy({
-      by: 'currency',
-      _sum: {
-        amount: true,
-      },
-      where: {
-        groupId: input.groupId,
-        deletedAt: null,
-        splitType: {
-          not: SplitType.SETTLEMENT,
-        },
-      },
-    });
+    const totals = (
+      await ctx.db
+        .select({
+          currency: expenses.currency,
+          amount: sql<bigint>`SUM(${expenses.amount})`.mapWith((v) => BigInt(v ?? 0)),
+        })
+        .from(expenses)
+        .where(
+          and(
+            eq(expenses.groupId, input.groupId),
+            isNull(expenses.deletedAt),
+            ne(expenses.splitType, SplitType.SETTLEMENT),
+          ),
+        )
+        .groupBy(expenses.currency)
+    ).map((t) => ({ currency: t.currency, _sum: { amount: t.amount } }));
 
     return totals;
   }),
@@ -199,26 +189,25 @@ export const groupRouter = createTRPCRouter({
   addMembers: groupProcedure
     .input(z.object({ userIds: z.array(z.number()) }))
     .mutation(async ({ input, ctx }) => {
-      const groupUsers = await ctx.db.groupUser.createMany({
-        data: input.userIds.map((userId) => ({
-          groupId: input.groupId,
-          userId,
-        })),
-      });
+      await runBatch([
+        ...(input.userIds.length
+          ? [
+              ctx.db
+                .insert(groupUsers)
+                .values(input.userIds.map((userId) => ({ groupId: input.groupId, userId }))),
+            ]
+          : []),
+        ctx.db.delete(groupDefaultSplits).where(eq(groupDefaultSplits.groupId, input.groupId)),
+      ]);
+      const created = { count: input.userIds.length };
 
-      await ctx.db.groupDefaultSplit.deleteMany({ where: { groupId: input.groupId } });
-
-      return groupUsers;
+      return created;
     }),
 
   toggleSimplifyDebts: groupProcedure
     .input(z.object({ groupId: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      const group = await ctx.db.group.findUnique({
-        where: {
-          id: input.groupId,
-        },
-      });
+      const group = await ctx.db.query.groups.findFirst({ where: eq(groups.id, input.groupId) });
 
       if (!group) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' });
@@ -231,11 +220,11 @@ export const groupRouter = createTRPCRouter({
         });
       }
 
-      const isInGroup = await ctx.db.groupUser.findFirst({
-        where: {
-          groupId: input.groupId,
-          userId: ctx.session.user.id,
-        },
+      const isInGroup = await ctx.db.query.groupUsers.findFirst({
+        where: and(
+          eq(groupUsers.groupId, input.groupId),
+          eq(groupUsers.userId, ctx.session.user.id),
+        ),
       });
 
       if (!isInGroup) {
@@ -247,20 +236,19 @@ export const groupRouter = createTRPCRouter({
 
       const simplifyDebtsInv = !group.simplifyDebts;
 
-      await ctx.db.group.update({
-        where: {
-          id: input.groupId,
-        },
-        data: {
-          simplifyDebts: simplifyDebtsInv,
-        },
-      });
+      await ctx.db
+        .update(groups)
+        .set({ simplifyDebts: simplifyDebtsInv })
+        .where(eq(groups.id, input.groupId));
 
       // Send notifications asynchronously
-      void sendGroupSimplifyDebtsToggleNotification(
-        input.groupId,
-        ctx.session.user.id,
-        simplifyDebtsInv,
+      runInBackground(
+        'push:simplify-debts',
+        sendGroupSimplifyDebtsToggleNotification(
+          input.groupId,
+          ctx.session.user.id,
+          simplifyDebtsInv,
+        ),
       );
 
       return simplifyDebts;
@@ -271,11 +259,7 @@ export const groupRouter = createTRPCRouter({
     .mutation(async ({ input, ctx }) => {
       const userId = input.userId ?? ctx.session.user.id;
 
-      const group = await ctx.db.group.findUnique({
-        where: {
-          id: input.groupId,
-        },
-      });
+      const group = await ctx.db.query.groups.findFirst({ where: eq(groups.id, input.groupId) });
       if (!group) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' });
       }
@@ -287,9 +271,7 @@ export const groupRouter = createTRPCRouter({
         });
       }
 
-      const groupBalances = await ctx.db.balanceView.findMany({
-        where: { groupId: input.groupId },
-      });
+      const groupBalances = await groupBalancesOf(ctx.db, input.groupId);
 
       const finalGroupBalances = group.simplifyDebts ? simplifyDebts(groupBalances) : groupBalances;
 
@@ -300,16 +282,13 @@ export const groupRouter = createTRPCRouter({
         });
       }
 
-      const groupUser = await ctx.db.groupUser.delete({
-        where: {
-          groupId_userId: {
-            groupId: input.groupId,
-            userId,
-          },
-        },
-      });
-
-      await ctx.db.groupDefaultSplit.deleteMany({ where: { groupId: input.groupId } });
+      const [[groupUser]] = (await runBatch([
+        ctx.db
+          .delete(groupUsers)
+          .where(and(eq(groupUsers.groupId, input.groupId), eq(groupUsers.userId, userId)))
+          .returning(),
+        ctx.db.delete(groupDefaultSplits).where(eq(groupDefaultSplits.groupId, input.groupId)),
+      ])) as [(typeof groupUsers.$inferSelect)[]];
 
       return groupUser;
     }),
@@ -329,21 +308,25 @@ export const groupRouter = createTRPCRouter({
 
       const serialized = serializeDefaultSplit(parsed);
 
-      const groupDefaultSplit = await ctx.db.groupDefaultSplit.upsert({
-        where: { groupId: input.groupId },
-        create: {
+      const [groupDefaultSplit] = await ctx.db
+        .insert(groupDefaultSplits)
+        .values({
           groupId: input.groupId,
           splitType: serialized.splitType,
           shares: serialized.shares,
-        },
-        update: {
-          splitType: serialized.splitType,
-          shares: serialized.shares,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: groupDefaultSplits.groupId,
+          set: {
+            splitType: serialized.splitType,
+            shares: serialized.shares,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
 
       return {
-        splitType: groupDefaultSplit.splitType,
+        splitType: groupDefaultSplit!.splitType,
         shares: serialized.shares,
       };
     }),
@@ -351,7 +334,7 @@ export const groupRouter = createTRPCRouter({
   clearDefaultSplit: groupProcedure
     .input(z.object({ groupId: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      await ctx.db.groupDefaultSplit.deleteMany({ where: { groupId: input.groupId } });
+      await ctx.db.delete(groupDefaultSplits).where(eq(groupDefaultSplits.groupId, input.groupId));
       return true;
     }),
 
@@ -365,26 +348,17 @@ export const groupRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const group = await ctx.db.group.findUnique({
-        where: {
-          id: input.groupId,
-        },
-      });
+      const group = await ctx.db.query.groups.findFirst({ where: eq(groups.id, input.groupId) });
 
       if (!group) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' });
       }
 
-      const updatedGroup = await ctx.db.group.update({
-        where: {
-          id: input.groupId,
-        },
-        data: {
-          name: input.name,
-          image: input.image,
-          defaultCurrency: input.defaultCurrency,
-        },
-      });
+      const [updatedGroup] = await ctx.db
+        .update(groups)
+        .set({ name: input.name, image: input.image, defaultCurrency: input.defaultCurrency })
+        .where(eq(groups.id, input.groupId))
+        .returning();
 
       return updatedGroup;
     }),
@@ -392,25 +366,19 @@ export const groupRouter = createTRPCRouter({
   toggleArchive: groupProcedure
     .input(z.object({ groupId: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      const group = await ctx.db.group.findUnique({
-        where: {
-          id: input.groupId,
-        },
-        include: {
-          groupBalances: true,
-        },
-      });
+      const found = await ctx.db.query.groups.findFirst({ where: eq(groups.id, input.groupId) });
+      const group = found && { ...found, groupBalances: await groupBalancesOf(ctx.db, found.id) };
 
       if (!group) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Group not found' });
       }
 
       // Check if user is a member of the group
-      const isInGroup = await ctx.db.groupUser.findFirst({
-        where: {
-          groupId: input.groupId,
-          userId: ctx.session.user.id,
-        },
+      const isInGroup = await ctx.db.query.groupUsers.findFirst({
+        where: and(
+          eq(groupUsers.groupId, input.groupId),
+          eq(groupUsers.userId, ctx.session.user.id),
+        ),
       });
 
       if (!isInGroup) {
@@ -439,14 +407,11 @@ export const groupRouter = createTRPCRouter({
         }
       }
 
-      const updatedGroup = await ctx.db.group.update({
-        where: {
-          id: input.groupId,
-        },
-        data: {
-          archivedAt: isArchiving ? new Date() : null,
-        },
-      });
+      const [updatedGroup] = await ctx.db
+        .update(groups)
+        .set({ archivedAt: isArchiving ? new Date() : null })
+        .where(eq(groups.id, input.groupId))
+        .returning();
 
       return updatedGroup;
     }),
@@ -454,14 +419,8 @@ export const groupRouter = createTRPCRouter({
   delete: groupProcedure
     .input(z.object({ groupId: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      const group = await ctx.db.group.findUnique({
-        where: {
-          id: input.groupId,
-        },
-        include: {
-          groupBalances: true,
-        },
-      });
+      const found = await ctx.db.query.groups.findFirst({ where: eq(groups.id, input.groupId) });
+      const group = found && { ...found, groupBalances: await groupBalancesOf(ctx.db, found.id) };
 
       if (group?.userId !== ctx.session.user.id) {
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only creator can delete the group' });
@@ -480,14 +439,13 @@ export const groupRouter = createTRPCRouter({
         });
       }
 
-      await ctx.db.group.delete({
-        where: {
-          id: input.groupId,
-        },
-      });
+      await ctx.db.delete(groups).where(eq(groups.id, input.groupId));
 
       return group;
     }),
 });
+
+const groupBalancesOf = (database: DB, groupId: number) =>
+  database.select().from(balanceView).where(eq(balanceView.groupId, groupId));
 
 export type GroupRouter = typeof groupRouter;

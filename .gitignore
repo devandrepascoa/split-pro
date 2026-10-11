@@ -64,3 +64,11 @@ SEED_STATISTICS.md
 # Agents
 .worktrees/
 docs/superpowers/
+
+.dev.vars
+.wrangler/
+dist/
+.vinext/
+
+# Personal Cloudflare deployment config (copy wrangler.example.jsonc to wrangler.jsonc)
+wrangler.jsonc

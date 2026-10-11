@@ -1,4 +1,4 @@
-import { SplitType, type User } from '@prisma/client';
+import { SplitType, type User } from '~/server/db/types';
 import { ArrowRightIcon } from 'lucide-react';
 import React, { useState } from 'react';
 import { toast } from 'sonner';
@@ -7,7 +7,7 @@ import { DEFAULT_CATEGORY } from '~/lib/category';
 import { api } from '~/utils/api';
 import { BigMath } from '~/utils/numbers';
 
-import { useSession } from 'next-auth/react';
+import { useSession } from '~/lib/auth-client';
 import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';
 import type { MinimalBalance } from '~/types/balance.types';
 import { EntityAvatar } from '../ui/avatar';

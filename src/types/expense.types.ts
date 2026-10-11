@@ -1,4 +1,4 @@
-import { type Expense, type ExpenseParticipant, SplitType } from '@prisma/client';
+import { type Expense, type ExpenseParticipant, SplitType } from '~/server/db/types';
 import { type ZodTypeAny, z } from 'zod';
 
 /**

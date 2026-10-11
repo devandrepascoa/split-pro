@@ -9,13 +9,8 @@ export const env = createEnv({
    * isn't built with invalid env vars.
    */
   server: {
-    DATABASE_URL: z
-      .string()
-      .url()
-      .refine(
-        (str) => !str.includes('YOUR_MYSQL_URL_HERE'),
-        'You forgot to change the default URL',
-      ),
+    // Unused on Cloudflare Workers: the database is the D1 binding `DB`.
+    DATABASE_URL: z.string().optional(),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     DOCKER_OUTPUT: z.boolean().default(false),
     NEXTAUTH_SECRET: 'production' === process.env.NODE_ENV ? z.string() : z.string().optional(),
@@ -74,6 +69,7 @@ export const env = createEnv({
     OIDC_WELL_KNOWN_URL: z.string().optional(),
     OIDC_ALLOW_DANGEROUS_EMAIL_LINKING: z.boolean().default(false),
     OAUTH_AUTO_REDIRECT: z.boolean().default(false),
+    CRON_SECRET: z.string().optional(),
     UPLOAD_MAX_FILE_SIZE_MB: z.coerce.number().int().positive().default(10),
   },
 
@@ -92,9 +88,7 @@ export const env = createEnv({
    * middlewares) or client-side so we need to destruct manually.
    */
   runtimeEnv: {
-    DATABASE_URL:
-      process.env.DATABASE_URL ??
-      `postgresql://${process.env.POSTGRES_USER}:${process.env.POSTGRES_PASSWORD}@${process.env.POSTGRES_HOST}:${process.env.POSTGRES_PORT}`,
+    DATABASE_URL: process.env.DATABASE_URL,
     NODE_ENV: process.env.NODE_ENV,
     DOCKER_OUTPUT: parseEnvBoolean(process.env.DOCKER_OUTPUT),
     NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET,
@@ -144,6 +138,7 @@ export const env = createEnv({
       process.env.OIDC_ALLOW_DANGEROUS_EMAIL_LINKING,
     ),
     OAUTH_AUTO_REDIRECT: parseEnvBoolean(process.env.OAUTH_AUTO_REDIRECT),
+    CRON_SECRET: process.env.CRON_SECRET,
     UPLOAD_MAX_FILE_SIZE_MB: process.env.UPLOAD_MAX_FILE_SIZE_MB
       ? Number(process.env.UPLOAD_MAX_FILE_SIZE_MB)
       : 10,

@@ -3,7 +3,27 @@ import { z } from 'zod';
 
 import { simplifyDebts } from '~/lib/simplify';
 import { createTRPCRouter, groupProcedure, protectedProcedure } from '~/server/api/trpc';
+import {
+  and,
+  desc,
+  eq,
+  exists,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
+
 import { db } from '~/server/db';
+import {
+  balanceView,
+  expenseParticipants,
+  expenses as expensesTable,
+  groups,
+} from '~/server/db/schema';
 import { BigMath, currencyConversion } from '~/utils/numbers';
 
 import {
@@ -16,46 +36,73 @@ import {
 import { createExpense, deleteExpense, editExpense } from '../services/splitService';
 import { currencyRateProvider } from '../services/currencyRateService';
 import { type CurrencyCode, isCurrencyCode } from '~/lib/currency';
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 import { DEFAULT_CATEGORY } from '~/lib/category';
 import { getUserMap } from './user';
-import { FriendBalance } from '~/components/Friend/FriendBalance';
+import { deleteJob, updateJobSchedule } from '../services/scheduleService';
+
+/** Correlated EXISTS: the expense identified by `expenseIdCol` has participant `userId`. */
+const hasParticipant = (expenseIdCol: typeof expensesTable.id, userId: number, nonZero = false) =>
+  exists(
+    db
+      .select({ one: sql`1` })
+      .from(expenseParticipants)
+      .where(
+        and(
+          eq(expenseParticipants.expenseId, expenseIdCol),
+          eq(expenseParticipants.userId, userId),
+          nonZero ? ne(expenseParticipants.amount, 0n) : undefined,
+        ),
+      ),
+  );
+
+/** Hide the "from" half of a currency conversion; the "to" half carries conversionToId. */
+const notConversionFromHalf = (e: typeof expensesTable._.columns) =>
+  or(ne(e.splitType, SplitType.CURRENCY_CONVERSION), isNotNull(e.conversionToId));
+
+const userSummaryColumns = { name: true, email: true, image: true, id: true } as const;
 
 export const expenseRouter = createTRPCRouter({
   getCumulatedBalances: protectedProcedure.query(async ({ ctx }) => {
-    const cumulatedBalances = await db.balanceView.groupBy({
-      by: ['currency'],
-      _sum: { amount: true },
-      where: { userId: ctx.session.user.id, amount: { not: 0 } },
-      orderBy: { _sum: { amount: 'desc' } },
-    });
+    const total = sql<bigint>`SUM(${balanceView.amount})`.mapWith((v) => BigInt(v ?? 0));
+    const cumulatedBalances = (
+      await db
+        .select({ currency: balanceView.currency, amount: total })
+        .from(balanceView)
+        .where(and(eq(balanceView.userId, ctx.session.user.id), ne(balanceView.amount, 0n)))
+        .groupBy(balanceView.currency)
+        .orderBy(desc(total))
+    ).map((b) => ({ currency: b.currency, _sum: { amount: b.amount } }));
 
     const youOwe = cumulatedBalances
       .filter((b) => b._sum.amount && 0 > b._sum.amount)
-      .map((b) => ({ currency: b.currency, amount: b._sum.amount! }))
+      .map((b) => ({ currency: b.currency, amount: b._sum.amount }))
       .reverse();
 
     const youGet = cumulatedBalances
       .filter((b) => b._sum.amount && 0 < b._sum.amount)
-      .map((b) => ({ currency: b.currency, amount: b._sum.amount! }));
+      .map((b) => ({ currency: b.currency, amount: b._sum.amount }));
 
     return { youOwe, youGet };
   }),
 
   getBalances: protectedProcedure.query(async ({ ctx }) => {
-    const rawBalances = await db.balanceView.findMany({
-      where: {
-        userId: ctx.session.user.id,
-        friendId: { notIn: ctx.session.user.hiddenFriendIds },
-      },
-      include: {
-        group: {
-          select: {
-            simplifyDebts: true,
-          },
-        },
-      },
-    });
+    const rawBalances = await db
+      .select({
+        friendId: balanceView.friendId,
+        currency: balanceView.currency,
+        amount: balanceView.amount,
+        groupId: balanceView.groupId,
+        group: { simplifyDebts: groups.simplifyDebts },
+      })
+      .from(balanceView)
+      .leftJoin(groups, eq(groups.id, balanceView.groupId))
+      .where(
+        and(
+          eq(balanceView.userId, ctx.session.user.id),
+          notInArray(balanceView.friendId, ctx.session.user.hiddenFriendIds),
+        ),
+      );
 
     const processedBalances = await Promise.all(
       rawBalances.map(async ({ friendId, currency, amount, groupId, group }) => {
@@ -63,9 +110,10 @@ export const expenseRouter = createTRPCRouter({
           return { friendId, currency, amount };
         }
 
-        const allGroupBalances = await db.balanceView.findMany({
-          where: { groupId, currency },
-        });
+        const allGroupBalances = await db
+          .select()
+          .from(balanceView)
+          .where(and(eq(balanceView.groupId, groupId), eq(balanceView.currency, currency)));
 
         const simplified = simplifyDebts(allGroupBalances);
         const simplifiedBalance = simplified.find(
@@ -142,9 +190,9 @@ export const expenseRouter = createTRPCRouter({
         }
 
         if (input.groupId !== null) {
-          const group = await db.group.findUnique({
-            where: { id: input.groupId },
-            select: { archivedAt: true },
+          const group = await db.query.groups.findFirst({
+            where: eq(groups.id, input.groupId),
+            columns: { archivedAt: true },
           });
           if (!group) {
             throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
@@ -231,83 +279,24 @@ export const expenseRouter = createTRPCRouter({
   getExpensesWithFriend: protectedProcedure
     .input(z.object({ friendId: z.number() }))
     .query(async ({ input, ctx }) => {
-      const expenses = await db.expense.findMany({
-        where: {
-          AND: [
-            {
-              expenseParticipants: {
-                some: {
-                  userId: input.friendId,
-                  amount: {
-                    not: 0n,
-                  },
-                },
-              },
-            },
-            {
-              expenseParticipants: {
-                some: {
-                  userId: ctx.session.user.id,
-                  amount: {
-                    not: 0n,
-                  },
-                },
-              },
-            },
-            {
-              OR: [
-                {
-                  paidBy: ctx.session.user.id,
-                },
-                {
-                  paidBy: input.friendId,
-                },
-              ],
-            },
-            {
-              deletedBy: null,
-            },
-            {
-              OR: [
-                {
-                  NOT: {
-                    splitType: SplitType.CURRENCY_CONVERSION,
-                  },
-                },
-                {
-                  NOT: {
-                    conversionToId: null,
-                  },
-                },
-              ],
-            },
-          ],
-        },
-        orderBy: {
-          expenseDate: 'desc',
-        },
-        include: {
+      const me = ctx.session.user.id;
+      const expenses = await db.query.expenses.findMany({
+        where: (e) =>
+          and(
+            hasParticipant(e.id, input.friendId, true),
+            hasParticipant(e.id, me, true),
+            or(eq(e.paidBy, me), eq(e.paidBy, input.friendId)),
+            isNull(e.deletedBy),
+            notConversionFromHalf(e),
+          ),
+        orderBy: (e) => [desc(e.expenseDate)],
+        with: {
           expenseParticipants: {
-            where: {
-              OR: [
-                {
-                  userId: ctx.session.user.id,
-                },
-                {
-                  userId: input.friendId,
-                },
-              ],
-            },
+            where: (ep) => inArray(ep.userId, [me, input.friendId]),
           },
           paidByUser: true,
           conversionTo: true,
-          group: {
-            select: {
-              id: true,
-              name: true,
-              simplifyDebts: true,
-            },
-          },
+          group: { columns: { id: true, name: true, simplifyDebts: true } },
         },
       });
 
@@ -317,27 +306,11 @@ export const expenseRouter = createTRPCRouter({
   getGroupExpenses: groupProcedure
     .input(z.object({ groupId: z.number() }))
     .query(async ({ input, ctx }) => {
-      const expenses = await ctx.db.expense.findMany({
-        where: {
-          groupId: input.groupId,
-          deletedBy: null,
-          OR: [
-            {
-              NOT: {
-                splitType: SplitType.CURRENCY_CONVERSION,
-              },
-            },
-            {
-              NOT: {
-                conversionToId: null,
-              },
-            },
-          ],
-        },
-        orderBy: {
-          expenseDate: 'desc',
-        },
-        include: {
+      const expenses = await ctx.db.query.expenses.findMany({
+        where: (e) =>
+          and(eq(e.groupId, input.groupId), isNull(e.deletedBy), notConversionFromHalf(e)),
+        orderBy: (e) => [desc(e.expenseDate)],
+        with: {
           expenseParticipants: true,
           paidByUser: true,
           deletedByUser: true,
@@ -351,59 +324,29 @@ export const expenseRouter = createTRPCRouter({
   getExpenseDetails: protectedProcedure
     .input(z.object({ expenseId: z.string() }))
     .query(async ({ input }) => {
-      const expense = await db.expense.findUnique({
-        where: {
-          id: input.expenseId,
-        },
-        include: {
-          expenseParticipants: {
-            include: {
-              user: true,
-            },
-          },
+      const expense = await db.query.expenses.findFirst({
+        where: eq(expensesTable.id, input.expenseId),
+        with: {
+          expenseParticipants: { with: { user: true } },
           expenseNotes: true,
           addedByUser: true,
           paidByUser: true,
           deletedByUser: true,
           updatedByUser: true,
           group: true,
-          recurrence: {
-            include: {
-              job: {
-                select: {
-                  schedule: true,
-                  command: true,
-                },
-              },
-            },
-          },
-          conversionTo: {
-            include: {
-              expenseParticipants: {
-                include: {
-                  user: true,
-                },
-              },
-            },
-          },
+          recurrence: { with: { job: { columns: { schedule: true, command: true } } } },
+          conversionTo: { with: { expenseParticipants: { with: { user: true } } } },
         },
       });
 
       if (expense && expense.groupId !== null) {
-        const missingGroupMembers = await db.group.findUnique({
-          where: {
-            id: expense.groupId,
-          },
-          include: {
+        const participantIds = expense.expenseParticipants.map((ep) => ep.userId);
+        const missingGroupMembers = await db.query.groups.findFirst({
+          where: eq(groups.id, expense.groupId),
+          with: {
             groupUsers: {
-              include: {
-                user: true,
-              },
-              where: {
-                userId: {
-                  notIn: expense.expenseParticipants.map((ep) => ep.userId),
-                },
-              },
+              where: (gu) => notInArray(gu.userId, participantIds),
+              with: { user: true },
             },
           },
         });
@@ -425,68 +368,34 @@ export const expenseRouter = createTRPCRouter({
     }),
 
   getAllExpenses: protectedProcedure.query(async ({ ctx }) => {
-    const expenses = await db.expenseParticipant.findMany({
-      where: {
-        userId: ctx.session.user.id,
-      },
-      orderBy: {
-        expense: {
-          createdAt: 'desc',
-        },
-      },
-      include: {
-        expense: {
-          include: {
-            paidByUser: {
-              select: {
-                name: true,
-                email: true,
-                image: true,
-                id: true,
-              },
-            },
-            deletedByUser: {
-              select: {
-                name: true,
-                email: true,
-                image: true,
-                id: true,
-              },
+    const expenses = (
+      await db.query.expenseParticipants.findMany({
+        where: eq(expenseParticipants.userId, ctx.session.user.id),
+        with: {
+          expense: {
+            with: {
+              paidByUser: { columns: userSummaryColumns },
+              deletedByUser: { columns: userSummaryColumns },
             },
           },
         },
-      },
-    });
+      })
+    ).sort((a, b) => b.expense.createdAt.getTime() - a.expense.createdAt.getTime());
 
     return expenses;
   }),
 
   getRecurringExpenses: protectedProcedure.query(async ({ ctx }) => {
-    const recurrences = await db.expenseRecurrence.findMany({
-      include: {
+    const me = ctx.session.user.id;
+    const recurrences = await db.query.expenseRecurrences.findMany({
+      with: {
         job: true,
         expense: {
-          take: 1,
-          orderBy: { createdAt: 'desc' },
-          where: {
-            deletedBy: null,
-            expenseParticipants: {
-              some: {
-                userId: ctx.session.user.id,
-              },
-            },
-            recurrenceId: { not: null },
-          },
-          include: {
-            addedByUser: {
-              select: {
-                name: true,
-                email: true,
-                image: true,
-                id: true,
-              },
-            },
-          },
+          limit: 1,
+          orderBy: (e) => [desc(e.createdAt)],
+          where: (e) =>
+            and(isNull(e.deletedBy), hasParticipant(e.id, me), isNotNull(e.recurrenceId)),
+          with: { addedByUser: { columns: userSummaryColumns } },
         },
       },
     });
@@ -499,56 +408,26 @@ export const expenseRouter = createTRPCRouter({
   deleteRecurrence: protectedProcedure
     .input(z.object({ recurrenceId: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      const recurrence = await db.expenseRecurrence.findUnique({
-        where: { id: input.recurrenceId },
-        include: {
-          job: true,
-          expense: {
-            where: {
-              expenseParticipants: {
-                some: { userId: ctx.session.user.id },
-              },
-            },
-            take: 1,
-          },
-        },
-      });
+      const recurrence = await findUserRecurrence(input.recurrenceId, ctx.session.user.id);
 
       if (!recurrence || 0 === recurrence.expense.length) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Recurrence not found' });
       }
 
-      // Unschedule the cron job
-      await db.$executeRaw`SELECT cron.unschedule(${recurrence.job.jobname})`;
-
-      // Delete the recurrence (cascade nulls recurrenceId on expenses)
-      await db.expenseRecurrence.delete({ where: { id: input.recurrenceId } });
+      // Deleting the job cascades to the recurrence, which nulls recurrenceId on expenses.
+      await deleteJob(recurrence.job.jobid);
     }),
 
   updateRecurrence: protectedProcedure
     .input(z.object({ recurrenceId: z.number(), cronExpression: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      const recurrence = await db.expenseRecurrence.findUnique({
-        where: { id: input.recurrenceId },
-        include: {
-          job: true,
-          expense: {
-            where: {
-              expenseParticipants: {
-                some: { userId: ctx.session.user.id },
-              },
-            },
-            take: 1,
-          },
-        },
-      });
+      const recurrence = await findUserRecurrence(input.recurrenceId, ctx.session.user.id);
 
       if (!recurrence || 0 === recurrence.expense.length) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Recurrence not found' });
       }
 
-      // Use cron.alter_job to update the schedule
-      await db.$executeRaw`SELECT cron.alter_job(${recurrence.job.jobid}, schedule := ${input.cronExpression})`;
+      await updateJobSchedule(recurrence.job.jobid, input.cronExpression);
     }),
 
   deleteExpense: protectedProcedure
@@ -556,9 +435,9 @@ export const expenseRouter = createTRPCRouter({
     .mutation(async ({ input, ctx }) => {
       await validateEditExpensePermission(input.expenseId, ctx.session.user.id);
 
-      const expense = await db.expense.findUnique({
-        where: { id: input.expenseId },
-        select: { groupId: true },
+      const expense = await db.query.expenses.findFirst({
+        where: eq(expensesTable.id, input.expenseId),
+        columns: { groupId: true },
       });
 
       if (!expense) {
@@ -566,9 +445,9 @@ export const expenseRouter = createTRPCRouter({
       }
 
       if (expense.groupId !== null) {
-        const group = await db.group.findUnique({
-          where: { id: expense.groupId },
-          select: { archivedAt: true },
+        const group = await db.query.groups.findFirst({
+          where: eq(groups.id, expense.groupId),
+          columns: { archivedAt: true },
         });
         if (!group) {
           throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
@@ -628,15 +507,16 @@ export const expenseRouter = createTRPCRouter({
 
 const validateEditExpensePermission = async (expenseId: string, userId: number): Promise<void> => {
   const [expenseParticipant, addedBy] = await Promise.all([
-    db.expenseParticipant.findUnique({
-      where: {
-        expenseId_userId: {
-          expenseId: expenseId,
-          userId: userId,
-        },
-      },
+    db.query.expenseParticipants.findFirst({
+      where: and(
+        eq(expenseParticipants.expenseId, expenseId),
+        eq(expenseParticipants.userId, userId),
+      ),
     }),
-    db.expense.findUnique({ where: { id: expenseId }, select: { addedBy: true } }),
+    db.query.expenses.findFirst({
+      where: eq(expensesTable.id, expenseId),
+      columns: { addedBy: true },
+    }),
   ]);
 
   if (!expenseParticipant && !addedBy?.addedBy) {
@@ -646,5 +526,14 @@ const validateEditExpensePermission = async (expenseId: string, userId: number):
     });
   }
 };
+
+const findUserRecurrence = (recurrenceId: number, userId: number) =>
+  db.query.expenseRecurrences.findFirst({
+    where: (r) => eq(r.id, recurrenceId),
+    with: {
+      job: true,
+      expense: { where: (e) => hasParticipant(e.id, userId), limit: 1 },
+    },
+  });
 
 export type ExpenseRouter = typeof expenseRouter;

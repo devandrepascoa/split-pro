@@ -1,8 +1,11 @@
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 import { isCurrencyCode } from '~/lib/currency';
 import { type PushMessage } from '~/types';
 
+import { and, desc, eq, inArray, or } from 'drizzle-orm';
+
 import { db } from '~/server/db';
+import { expenseRecurrences, expenses, groups, pushNotifications, users } from '~/server/db/schema';
 import { pushNotification } from '~/server/notification';
 import { getCurrencyHelpers } from '~/utils/numbers';
 
@@ -26,14 +29,15 @@ const removeStalePushSubscriptions = async (
     return;
   }
 
-  await db.pushNotification.deleteMany({
-    where: {
-      OR: subscriptions.map((subscription) => ({
-        userId: subscription.userId,
-        endpoint: subscription.endpoint,
-      })),
-    },
-  });
+  await db
+    .delete(pushNotifications)
+    .where(
+      or(
+        ...subscriptions.map((s) =>
+          and(eq(pushNotifications.userId, s.userId), eq(pushNotifications.endpoint, s.endpoint)),
+        ),
+      ),
+    );
 };
 
 const isPermanentPushFailure = (statusCode: number | undefined) =>
@@ -44,13 +48,10 @@ export const sendPushNotificationToUsers = async (userIds: number[], pushData: P
     return { sentCount: 0 };
   }
 
-  const subscriptions = await db.pushNotification.findMany({
-    where: {
-      userId: {
-        in: userIds,
-      },
-    },
-  });
+  const subscriptions = await db
+    .select()
+    .from(pushNotifications)
+    .where(inArray(pushNotifications.userId, userIds));
 
   const pushResults = await Promise.all(
     subscriptions.map(async (s) => {
@@ -69,11 +70,10 @@ export const sendPushNotificationToUsers = async (userIds: number[], pushData: P
 };
 
 export async function sendExpensePushNotification(expenseId: string) {
-  const expense = await db.expense.findUnique({
-    where: {
-      id: expenseId,
-    },
-    select: {
+  const nameEmail = { columns: { name: true, email: true } } as const;
+  const expense = await db.query.expenses.findFirst({
+    where: eq(expenses.id, expenseId),
+    columns: {
       paidBy: true,
       amount: true,
       currency: true,
@@ -81,42 +81,14 @@ export async function sendExpensePushNotification(expenseId: string) {
       name: true,
       deletedBy: true,
       splitType: true,
-      deletedByUser: {
-        select: {
-          name: true,
-          email: true,
-        },
-      },
-      expenseParticipants: {
-        select: {
-          userId: true,
-          amount: true,
-        },
-      },
-      paidByUser: {
-        select: {
-          name: true,
-          email: true,
-        },
-      },
-      addedByUser: {
-        select: {
-          name: true,
-          email: true,
-        },
-      },
-      updatedByUser: {
-        select: {
-          name: true,
-          email: true,
-        },
-      },
-      conversionTo: {
-        select: {
-          currency: true,
-          amount: true,
-        },
-      },
+    },
+    with: {
+      deletedByUser: nameEmail,
+      expenseParticipants: { columns: { userId: true, amount: true } },
+      paidByUser: nameEmail,
+      addedByUser: nameEmail,
+      updatedByUser: nameEmail,
+      conversionTo: { columns: { currency: true, amount: true } },
     },
   });
 
@@ -207,22 +179,13 @@ export async function sendGroupSimplifyDebtsToggleNotification(
   newState: boolean,
 ) {
   try {
-    const group = await db.group.findUnique({
-      where: {
-        id: groupId,
-      },
-      select: {
-        name: true,
+    const group = await db.query.groups.findFirst({
+      where: eq(groups.id, groupId),
+      columns: { name: true },
+      with: {
         groupUsers: {
-          select: {
-            userId: true,
-            user: {
-              select: {
-                name: true,
-                email: true,
-              },
-            },
-          },
+          columns: { userId: true },
+          with: { user: { columns: { name: true, email: true } } },
         },
       },
     });
@@ -231,14 +194,9 @@ export async function sendGroupSimplifyDebtsToggleNotification(
       return;
     }
 
-    const togglerUser = await db.user.findUnique({
-      where: {
-        id: togglerUserId,
-      },
-      select: {
-        name: true,
-        email: true,
-      },
+    const togglerUser = await db.query.users.findFirst({
+      where: eq(users.id, togglerUserId),
+      columns: { name: true, email: true },
     });
 
     if (!togglerUser) {
@@ -277,17 +235,13 @@ export async function sendGroupSimplifyDebtsToggleNotification(
 
 export async function checkRecurrenceNotifications() {
   try {
-    const recurrences = await db.expenseRecurrence.findMany({
-      where: {
-        NOT: {
-          notified: true,
-        },
-      },
-      include: {
+    const recurrences = await db.query.expenseRecurrences.findMany({
+      where: eq(expenseRecurrences.notified, false),
+      with: {
         expense: {
-          select: { id: true },
-          orderBy: { createdAt: 'desc' },
-          take: 1,
+          columns: { id: true },
+          orderBy: (e) => [desc(e.createdAt)],
+          limit: 1,
         },
       },
     });
@@ -297,19 +251,14 @@ export async function checkRecurrenceNotifications() {
         .filter((r) => r.expense[0])
         .map(async (r) => {
           await sendExpensePushNotification(r.expense[0]!.id);
-          await db.expenseRecurrence.update({
-            where: {
-              id: r.id,
-            },
-            data: {
-              notified: true,
-            },
-          });
+          await db
+            .update(expenseRecurrences)
+            .set({ notified: true })
+            .where(eq(expenseRecurrences.id, r.id));
         }),
     );
   } catch (e) {
     console.error('Error sending recurrence notifications', e);
-  } finally {
-    setTimeout(checkRecurrenceNotifications, 1000 * 60); // Check every minute
+    throw e;
   }
 }

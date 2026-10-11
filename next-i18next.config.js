@@ -23,6 +23,7 @@ const config = {
     localeDetection: false,
   },
   localePath: './public/locales',
+  fallbackLng: 'en',
 };
 
 export default config;

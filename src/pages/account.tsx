@@ -10,7 +10,7 @@ import {
   Star,
 } from 'lucide-react';
 import type { GetServerSideProps } from 'next';
-import { signOut } from 'next-auth/react';
+import { signOut } from '~/lib/auth-client';
 import { useTranslation } from 'next-i18next';
 import Head from 'next/head';
 import { useRouter } from 'next/router';

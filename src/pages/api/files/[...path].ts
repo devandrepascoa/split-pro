@@ -1,45 +1,36 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { getServerSession } from 'next-auth/next';
+import { getSessionFromHeaders } from '~/server/auth';
+import { bindings } from '~/server/db';
 
-import { authOptions } from '~/server/auth';
-import { fileExists } from '~/utils/file';
+export const config = { runtime: 'edge' };
 
-const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+const PREFIX = '/api/files/';
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if ('GET' !== req.method) {
-    return res.status(405).end();
+/** Serves receipts from R2. Any signed-in user can read, as before. */
+export default async function handler(request: Request) {
+  if ('GET' !== request.method) {
+    return new Response(null, { status: 405 });
   }
 
-  const session = await getServerSession(req, res, authOptions);
+  const session = await getSessionFromHeaders(request.headers);
   if (!session) {
-    return res.status(403).send('Unauthorized');
+    return new Response('Unauthorized', { status: 403 });
   }
 
-  const { path: pathParts } = req.query;
-
-  if (!pathParts || !Array.isArray(pathParts)) {
-    return res.status(400).send('Invalid path');
+  const { pathname } = new URL(request.url);
+  const key = decodeURIComponent(pathname.slice(pathname.indexOf(PREFIX) + PREFIX.length));
+  // Keys look like "<userId>/<uuid>" (legacy: "<userId>/<uuid>.webp").
+  if (!/^\d+\/[0-9a-f-]{36}(-thumb)?(\.webp)?$/i.test(key)) {
+    return new Response('Invalid path', { status: 400 });
   }
 
-  const filePath = path.join(UPLOAD_DIR, ...pathParts);
-  const resolvedPath = path.resolve(filePath);
-
-  if (!resolvedPath.startsWith(path.resolve(UPLOAD_DIR))) {
-    return res.status(403).send('Forbidden');
+  const object = await bindings.UPLOADS.get(key);
+  if (!object) {
+    return new Response('File not found', { status: 404 });
   }
 
-  if (!(await fileExists(filePath))) {
-    return res.status(404).send('File not found');
-  }
-
-  res.setHeader('Content-Type', 'image/webp');
-  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-
-  const fileStream = await fs
-    .open(filePath, 'r')
-    .then((fileHandle) => fileHandle.createReadStream());
-  fileStream.pipe(res);
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('etag', object.httpEtag);
+  headers.set('Cache-Control', 'private, max-age=31536000, immutable');
+  return new Response(object.body, { headers });
 }

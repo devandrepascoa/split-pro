@@ -9,7 +9,10 @@ import {
   type Transaction,
 } from 'plaid';
 import { env } from '~/env';
+import { and, eq } from 'drizzle-orm';
+
 import { db } from '~/server/db';
+import { cachedBankData } from '~/server/db/schema';
 import type { TransactionOutput, TransactionOutputItem } from '~/types/bank.types';
 
 abstract class AbstractBankProvider {
@@ -77,8 +80,11 @@ export class PlaidService extends AbstractBankProvider {
       return;
     }
 
-    const cachedData = await db.cachedBankData.findUnique({
-      where: { obapiProviderId: accessToken, userId },
+    const cachedData = await db.query.cachedBankData.findFirst({
+      where: and(
+        eq(cachedBankData.obapiProviderId, accessToken),
+        eq(cachedBankData.userId, userId),
+      ),
     });
 
     if (cachedData) {
@@ -111,24 +117,16 @@ export class PlaidService extends AbstractBankProvider {
       response.data.transactions,
     );
 
-    const data = {
-      obapiProviderId: accessToken,
-      data: JSON.stringify(formattedTransactions),
-      lastFetched: new Date(),
-      user: {
-        connect: {
-          id: userId,
-        },
-      },
-    };
-
-    await db.cachedBankData.upsert({
-      where: { obapiProviderId: accessToken, userId },
-      create: data,
-      update: {
-        lastFetched: new Date(),
-      },
-    });
+    const serialized = JSON.stringify(formattedTransactions);
+    const now = new Date();
+    await db
+      .insert(cachedBankData)
+      .values({ obapiProviderId: accessToken, data: serialized, lastFetched: now, userId })
+      .onConflictDoUpdate({
+        target: cachedBankData.obapiProviderId,
+        set: { data: serialized, lastFetched: now, updatedAt: now },
+        where: eq(cachedBankData.userId, userId),
+      });
 
     return formattedTransactions;
   }
@@ -213,8 +211,8 @@ export class PlaidService extends AbstractBankProvider {
   }
 
   private formatTransactions(transactions: Transaction[]): TransactionOutput {
-    const bookedTransactions = transactions.filter((t) => t.pending === false);
-    const pendingTransactions = transactions.filter((t) => t.pending === true);
+    const bookedTransactions = transactions.filter((t) => !t.pending);
+    const pendingTransactions = transactions.filter((t) => t.pending);
 
     return {
       transactions: {

@@ -1,6 +1,6 @@
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 import { isSameDay } from 'date-fns';
-import { type User as NextUser } from 'next-auth';
+import type { SessionUser as NextUser } from '~/server/auth';
 
 import type { inferRouterOutputs } from '@trpc/server';
 import { ArrowRightIcon, Landmark, Merge, PencilIcon, Users } from 'lucide-react';

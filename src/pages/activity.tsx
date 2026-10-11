@@ -1,5 +1,5 @@
-import { SplitType } from '@prisma/client';
-import { type User } from 'next-auth';
+import { SplitType } from '~/server/db/types';
+import type { SessionUser as User } from '~/server/auth';
 import Head from 'next/head';
 import Link from 'next/link';
 import MainLayout from '~/components/Layout/MainLayout';

@@ -1,4 +1,4 @@
-import { SplitType, type User } from '@prisma/client';
+import { SplitType, type User } from '~/server/db/types';
 import { ArrowRightIcon } from 'lucide-react';
 import React, { type ReactNode, useState } from 'react';
 import { toast } from 'sonner';
@@ -10,7 +10,7 @@ import { BigMath } from '~/utils/numbers';
 import { EntityAvatar } from '../ui/avatar';
 import { CurrencyInput } from '../ui/currency-input';
 import { AppDrawer } from '../ui/drawer';
-import { useSession } from 'next-auth/react';
+import { useSession } from '~/lib/auth-client';
 
 export const GroupSettleUp: React.FC<{
   amount: bigint;

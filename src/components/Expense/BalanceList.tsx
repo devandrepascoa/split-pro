@@ -1,4 +1,4 @@
-import type { BalanceView, User } from '@prisma/client';
+import type { BalanceView, User } from '~/server/db/types';
 import { clsx } from 'clsx';
 import { type ComponentProps, Fragment, useCallback, useMemo } from 'react';
 import { EntityAvatar } from '~/components/ui/avatar';

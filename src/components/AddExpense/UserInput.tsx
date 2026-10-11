@@ -59,7 +59,7 @@ export const UserInput: React.FC<{
         id: -1,
         name: nameOrEmail,
         email: nameOrEmail,
-        emailVerified: new Date(),
+        emailVerified: true,
         image: null,
         currency: 'USD',
         defaultCurrency: null,

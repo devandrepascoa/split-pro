@@ -1,4 +1,4 @@
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 import React, { useCallback, useMemo } from 'react';
 
 import {

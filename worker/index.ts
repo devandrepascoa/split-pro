@@ -1,58 +1,53 @@
-import { type PushMessage } from '~/types';
-import { defaultCache } from '@serwist/next/worker';
-import type { PrecacheEntry, SerwistGlobalConfig } from 'serwist';
-import { Serwist } from 'serwist';
+/**
+ * Worker entry: vinext Pages Router handler plus the scheduler Workflow class.
+ * vinext uses ./worker/index.ts as `main` when it exists.
+ *
+ * The wrapper logs every uncaught exception and every 5xx response to Workers Observability.
+ * Uncaught exceptions are re-thrown so they also appear in Workers Issues.
+ */
+import handler from 'vinext/server/pages-router-entry';
 
-// This declares the value of `injectionPoint` to TypeScript.
-// `injectionPoint` is the string that will be replaced by the
-// actual precache manifest. By default, this string is set to
-// `"self.__SW_MANIFEST"`.
-declare global {
-  interface WorkerGlobalScope extends SerwistGlobalConfig {
-    __SW_MANIFEST: (PrecacheEntry | string)[] | undefined;
-  }
-}
+import { logError } from '../src/server/observability/errorLog';
 
-declare const self: ServiceWorkerGlobalScope;
+export { SchedulerWorkflow } from '../src/server/workflows/scheduler';
 
-const serwist = new Serwist({
-  precacheEntries: self.__SW_MANIFEST,
-  skipWaiting: true,
-  clientsClaim: true,
-  navigationPreload: true,
-  runtimeCaching: defaultCache,
+addEventListener('unhandledrejection', (event: Event) => {
+  logError('unhandledrejection', (event as PromiseRejectionEvent).reason);
 });
 
-self.addEventListener('push', function (event) {
-  const { title, message, data } = JSON.parse(event?.data?.text() ?? '{}') as PushMessage;
-  event.waitUntil(
-    self.registration.showNotification(title, {
-      body: message,
-      icon: '/icons/android-chrome-192x192.png',
-      data,
-    }),
-  );
-});
+type FetchHandler = (request: Request, env: unknown, ctx: ExecutionContext) => Promise<Response>;
+const vinextFetch = (handler as unknown as { fetch: FetchHandler }).fetch;
 
-self.addEventListener('notificationclick', function (event) {
-  event.notification.close();
-  event.waitUntil(
-    (async () => {
-      const clientList = await self.clients.matchAll({ type: 'window' });
+const requestContext = (request: Request) => {
+  const url = new URL(request.url);
+  return {
+    method: request.method,
+    path: url.pathname,
+    query: url.search,
+    rayId: request.headers.get('cf-ray') ?? undefined,
+  };
+};
 
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      const url = (event.notification.data?.url as string) ?? '/';
+export default {
+  async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
+    let response: Response;
+    try {
+      response = await vinextFetch(request, env, ctx);
+    } catch (error) {
+      logError('worker', error, { ...requestContext(request), phase: 'uncaught' });
+      throw error;
+    }
 
-      const matchingClient = clientList.find((client) => client.focused) ?? clientList[0];
+    // Vinext turns errors in getServerSideProps / API routes into 5xx responses without
+    // Throwing, so log those too (the handler's own console.error output, if any, is
+    // Attached to the same invocation in Workers Logs).
+    if (500 <= response.status) {
+      logError('ssr', new Error(`HTTP ${response.status} response`), {
+        ...requestContext(request),
+        status: response.status,
+      });
+    }
 
-      if (matchingClient) {
-        const client = await matchingClient.focus();
-        await client.navigate(url);
-      } else {
-        await self.clients.openWindow(url);
-      }
-    })(),
-  );
-});
-
-serwist.addEventListeners();
+    return response;
+  },
+} satisfies ExportedHandler;

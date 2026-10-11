@@ -1,4 +1,4 @@
-import type { BalanceView as GroupBalance } from '@prisma/client';
+import type { BalanceView as GroupBalance } from '~/server/db/types';
 
 export function simplifyDebts(groupBalances: GroupBalance[]): GroupBalance[] {
   const currencies = new Set(groupBalances.map((balance) => balance.currency));
@@ -78,7 +78,7 @@ function simplifyDebtsForSingleCurrency(
   return result;
 }
 
-// based on https://www.geeksforgeeks.org/minimize-cash-flow-among-given-set-friends-borrowed-money/
+// Based on https://www.geeksforgeeks.org/minimize-cash-flow-among-given-set-friends-borrowed-money/
 const minCashFlow = (graph: bigint[][]): bigint[][] => {
   const n = graph.length;
 

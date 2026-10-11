@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 
 export const DEFAULT_SPLIT_TYPES = [
   SplitType.EQUAL,

@@ -20,7 +20,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "preserve",
-    "plugins": [{ "name": "next" }],
+    "types": ["@cloudflare/workers-types", "vite/client", "vinext/types"],
     "incremental": true,
 
     /* Path Aliases */
@@ -31,13 +31,22 @@
   },
   "include": [
     "eslint.config.mjs",
-    "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
     "**/*.jsx",
     "**/*.cjs",
     "**/*.js",
-    ".next/types/**/*.ts"
+    "worker/**/*.ts"
   ],
-  "exclude": ["node_modules", "public"]
+  "exclude": [
+    "node_modules",
+    "public",
+    "dist",
+    ".wrangler",
+    "src/tests",
+    "src/**/*.test.ts",
+    "src/dummies",
+    "jest.config.ts",
+    "jest.setup.ts"
+  ]
 }

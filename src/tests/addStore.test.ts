@@ -1,4 +1,4 @@
-import { SplitType, type User } from '@prisma/client';
+import { SplitType, type User } from '~/server/db/types';
 
 import {
   type AddExpenseState,
@@ -47,7 +47,7 @@ const createSplitShares = (participants: Participant[], splitType: SplitType, sh
 
   participants.forEach((participant, index) => {
     splitShares[participant.id] = initSplitShares();
-    splitShares[participant.id]![splitType] = shares[index] ?? 0n;
+    splitShares[participant.id][splitType] = shares[index] ?? 0n;
   });
 
   return splitShares;
@@ -68,7 +68,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants).toEqual(participants);
       expect(result.canSplitScreenClosed).toBe(true);
@@ -83,7 +83,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants).toEqual([]);
       expect(result.canSplitScreenClosed).toBe(false);
@@ -104,7 +104,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       // Each person should owe $100 (10000n), but payer gets the difference
       expect(result.participants[0]?.amount).toBe(20000n); // Payer: -10000n + 30000n = 20000n
@@ -126,7 +126,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       // Only first two participants split the cost
       expect(result.participants[0]?.amount).toBe(10000n); // Payer: -10000n + 20000n = 10000n
@@ -147,7 +147,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(10000n);
       expect(result.participants[1]?.amount).toBe(-10000n);
@@ -167,7 +167,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(0n);
       expect(result.participants[1]?.amount).toBe(0n);
@@ -187,7 +187,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.canSplitScreenClosed).toBe(false);
     });
@@ -205,7 +205,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       // Should distribute the extra penny
       const totalOwed = result.participants.reduce((sum, p) => sum + (p.amount ?? 0n), 0n);
@@ -226,7 +226,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(0n); // Payer pays and owes nothing
       expect(result.canSplitScreenClosed).toBe(true);
@@ -251,7 +251,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(5000n); // Payer: -5000n + 10000n = 5000n
       expect(result.participants[1]?.amount).toBe(-3000n); // Owes 30%
@@ -276,7 +276,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.canSplitScreenClosed).toBe(false);
     });
@@ -298,7 +298,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(3000n); // Payer: -7000n + 10000n
       expect(result.participants[1]?.amount).toBe(-3000n);
@@ -324,7 +324,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(6000n); // Payer: -6000n + 12000n = 6000n (50%)
       expect(result.participants[1]?.amount).toBe(-3000n); // 25%
@@ -349,7 +349,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(2000n); // Payer: -6000n + 8000n (75%)
       expect(result.participants[1]?.amount).toBe(-2000n); // 25%
@@ -369,7 +369,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.canSplitScreenClosed).toBe(false);
     });
@@ -393,7 +393,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(6000n); // Payer: -4000n + 10000n
       expect(result.participants[1]?.amount).toBe(-3000n);
@@ -418,7 +418,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.canSplitScreenClosed).toBe(false);
     });
@@ -440,7 +440,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(0n); // Payer: -10000n + 10000n
       expect(result.participants[1]?.amount).toBe(0n);
@@ -466,7 +466,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       // Remaining after adjustments: 15000n - 1000n - (-500n) - 0n = 14500n
       // Split equally: 14500n / 3 = ~4833n each
@@ -494,7 +494,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.canSplitScreenClosed).toBe(false);
     });
@@ -515,7 +515,7 @@ describe('calculateParticipantSplit', () => {
       };
 
       // Test with user2 as payer
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       expect(result.participants[0]?.amount).toBe(-10000n); // Owes
       expect(result.participants[1]?.amount).toBe(20000n); // Payer: -10000n + 30000n
@@ -537,7 +537,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       // All participants should owe their share but total balances to 0 due to penny adjustment
       expect(result.participants[0]?.amount).toBe(0n);
@@ -564,7 +564,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       const totalAmount = result.participants.reduce((sum, p) => sum + (p.amount ?? 0n), 0n);
 
@@ -584,7 +584,7 @@ describe('calculateParticipantSplit', () => {
         expenseDate: new Date('2024-01-01'),
       };
 
-      const result = calculateParticipantSplit(state as AddExpenseState);
+      const result = calculateParticipantSplit(state);
 
       // One participant should get the penny
       const totalAmount = result.participants.reduce((sum, p) => sum + (p.amount ?? 0n), 0n);
@@ -606,9 +606,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(10000n, participants, SplitType.EQUAL, splitShares, user1);
 
-      expect(splitShares[user1.id]![SplitType.EQUAL]).toBe(1n);
-      expect(splitShares[user2.id]![SplitType.EQUAL]).toBe(1n);
-      expect(splitShares[user3.id]![SplitType.EQUAL]).toBe(0n); // Zero amount
+      expect(splitShares[user1.id][SplitType.EQUAL]).toBe(1n);
+      expect(splitShares[user2.id][SplitType.EQUAL]).toBe(1n);
+      expect(splitShares[user3.id][SplitType.EQUAL]).toBe(0n); // Zero amount
     });
   });
 
@@ -622,9 +622,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(10000n, participants, SplitType.PERCENTAGE, splitShares);
 
-      expect(splitShares[user1.id]![SplitType.PERCENTAGE]).toBe(3000n); // 30%
-      expect(splitShares[user2.id]![SplitType.PERCENTAGE]).toBe(2000n); // 20%
-      expect(splitShares[user3.id]![SplitType.PERCENTAGE]).toBe(5000n); // 50%
+      expect(splitShares[user1.id][SplitType.PERCENTAGE]).toBe(3000n); // 30%
+      expect(splitShares[user2.id][SplitType.PERCENTAGE]).toBe(2000n); // 20%
+      expect(splitShares[user3.id][SplitType.PERCENTAGE]).toBe(5000n); // 50%
     });
 
     it('should calculate percentage shares when payer is specified', () => {
@@ -643,9 +643,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
       );
 
       // User1 is payer: paid 10000n but their amount is 8000n, so they owe 2000n (20%)
-      expect(splitShares[user1.id]![SplitType.PERCENTAGE]).toBe(2000n); // 20%
-      expect(splitShares[user2.id]![SplitType.PERCENTAGE]).toBe(3000n); // 30%
-      expect(splitShares[user3.id]![SplitType.PERCENTAGE]).toBe(5000n); // 50%
+      expect(splitShares[user1.id][SplitType.PERCENTAGE]).toBe(2000n); // 20%
+      expect(splitShares[user2.id][SplitType.PERCENTAGE]).toBe(3000n); // 30%
+      expect(splitShares[user3.id][SplitType.PERCENTAGE]).toBe(5000n); // 50%
     });
 
     it('should handle zero amount', () => {
@@ -657,9 +657,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(0n, participants, SplitType.PERCENTAGE, splitShares);
 
-      expect(splitShares[user1.id]![SplitType.PERCENTAGE]).toBe(0n);
-      expect(splitShares[user2.id]![SplitType.PERCENTAGE]).toBe(0n);
-      expect(splitShares[user3.id]![SplitType.PERCENTAGE]).toBe(0n);
+      expect(splitShares[user1.id][SplitType.PERCENTAGE]).toBe(0n);
+      expect(splitShares[user2.id][SplitType.PERCENTAGE]).toBe(0n);
+      expect(splitShares[user3.id][SplitType.PERCENTAGE]).toBe(0n);
     });
   });
 
@@ -675,9 +675,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       // Shares should be proportional: 6000:3000:3000 = 2:1:1
       // Multiplied by 100 and normalized
-      expect(splitShares[user1.id]![SplitType.SHARE]).toBe(200n); // 2 shares * 100
-      expect(splitShares[user2.id]![SplitType.SHARE]).toBe(100n); // 1 share * 100
-      expect(splitShares[user3.id]![SplitType.SHARE]).toBe(100n); // 1 share * 100
+      expect(splitShares[user1.id][SplitType.SHARE]).toBe(200n); // 2 shares * 100
+      expect(splitShares[user2.id][SplitType.SHARE]).toBe(100n); // 1 share * 100
+      expect(splitShares[user3.id][SplitType.SHARE]).toBe(100n); // 1 share * 100
     });
 
     it('should handle payer in share calculation', () => {
@@ -691,9 +691,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       // User1 is payer: paid 12000n but their amount is 6000n, so they owe 6000n
       // Shares: 6000:3000:3000 = 2:1:1
-      expect(splitShares[user1.id]![SplitType.SHARE]).toBe(200n);
-      expect(splitShares[user2.id]![SplitType.SHARE]).toBe(100n);
-      expect(splitShares[user3.id]![SplitType.SHARE]).toBe(100n);
+      expect(splitShares[user1.id][SplitType.SHARE]).toBe(200n);
+      expect(splitShares[user2.id][SplitType.SHARE]).toBe(100n);
+      expect(splitShares[user3.id][SplitType.SHARE]).toBe(100n);
     });
 
     it('should handle zero amount', () => {
@@ -705,9 +705,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(0n, participants, SplitType.SHARE, splitShares);
 
-      expect(splitShares[user1.id]![SplitType.SHARE]).toBe(0n);
-      expect(splitShares[user2.id]![SplitType.SHARE]).toBe(0n);
-      expect(splitShares[user3.id]![SplitType.SHARE]).toBe(0n);
+      expect(splitShares[user1.id][SplitType.SHARE]).toBe(0n);
+      expect(splitShares[user2.id][SplitType.SHARE]).toBe(0n);
+      expect(splitShares[user3.id][SplitType.SHARE]).toBe(0n);
     });
   });
 
@@ -721,9 +721,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(10000n, participants, SplitType.EXACT, splitShares);
 
-      expect(splitShares[user1.id]![SplitType.EXACT]).toBe(4000n);
-      expect(splitShares[user2.id]![SplitType.EXACT]).toBe(3000n);
-      expect(splitShares[user3.id]![SplitType.EXACT]).toBe(3000n);
+      expect(splitShares[user1.id][SplitType.EXACT]).toBe(4000n);
+      expect(splitShares[user2.id][SplitType.EXACT]).toBe(3000n);
+      expect(splitShares[user3.id][SplitType.EXACT]).toBe(3000n);
     });
 
     it('should handle payer in exact calculation', () => {
@@ -736,9 +736,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
       calculateSplitShareBasedOnAmount(10000n, participants, SplitType.EXACT, splitShares, user1);
 
       // User1 is payer: paid 10000n but their amount is 6000n, so they owe 4000n
-      expect(splitShares[user1.id]![SplitType.EXACT]).toBe(4000n);
-      expect(splitShares[user2.id]![SplitType.EXACT]).toBe(3000n);
-      expect(splitShares[user3.id]![SplitType.EXACT]).toBe(3000n);
+      expect(splitShares[user1.id][SplitType.EXACT]).toBe(4000n);
+      expect(splitShares[user2.id][SplitType.EXACT]).toBe(3000n);
+      expect(splitShares[user3.id][SplitType.EXACT]).toBe(3000n);
     });
 
     it('should handle zero amounts', () => {
@@ -750,9 +750,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(10000n, participants, SplitType.EXACT, splitShares);
 
-      expect(splitShares[user1.id]![SplitType.EXACT]).toBe(0n);
-      expect(splitShares[user2.id]![SplitType.EXACT]).toBe(0n);
-      expect(splitShares[user3.id]![SplitType.EXACT]).toBe(0n);
+      expect(splitShares[user1.id][SplitType.EXACT]).toBe(0n);
+      expect(splitShares[user2.id][SplitType.EXACT]).toBe(0n);
+      expect(splitShares[user3.id][SplitType.EXACT]).toBe(0n);
     });
   });
 
@@ -772,9 +772,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
         user1,
       );
 
-      expect(splitShares[user1.id]![SplitType.ADJUSTMENT]).toBe(1000n);
-      expect(splitShares[user2.id]![SplitType.ADJUSTMENT]).toBe(0n);
-      expect(splitShares[user3.id]![SplitType.ADJUSTMENT]).toBe(500n);
+      expect(splitShares[user1.id][SplitType.ADJUSTMENT]).toBe(1000n);
+      expect(splitShares[user2.id][SplitType.ADJUSTMENT]).toBe(0n);
+      expect(splitShares[user3.id][SplitType.ADJUSTMENT]).toBe(500n);
     });
 
     it('should handle participants with zero amounts', () => {
@@ -788,9 +788,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       // Only user2 has non-zero amount, so equal share = 5000n / 1 = 5000n
       // User2 owes 5000n vs 5000n = 0n adjustment
-      expect(splitShares[user1.id]![SplitType.ADJUSTMENT]).toBe(-5000n); // 0 - 5000n
-      expect(splitShares[user2.id]![SplitType.ADJUSTMENT]).toBe(0n); // 5000n - 5000n
-      expect(splitShares[user3.id]![SplitType.ADJUSTMENT]).toBe(-5000n); // 0 - 5000n
+      expect(splitShares[user1.id][SplitType.ADJUSTMENT]).toBe(-5000n); // 0 - 5000n
+      expect(splitShares[user2.id][SplitType.ADJUSTMENT]).toBe(0n); // 5000n - 5000n
+      expect(splitShares[user3.id][SplitType.ADJUSTMENT]).toBe(-5000n); // 0 - 5000n
     });
   });
 
@@ -814,8 +814,8 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(10000n, participants, SplitType.EQUAL, splitShares, user1);
 
-      expect(splitShares[user1.id]![SplitType.EQUAL]).toBe(0n);
-      expect(splitShares[user2.id]![SplitType.EQUAL]).toBe(1n);
+      expect(splitShares[user1.id][SplitType.EQUAL]).toBe(0n);
+      expect(splitShares[user2.id][SplitType.EQUAL]).toBe(1n);
     });
 
     it('should handle self-payment (no money flow) scenario', () => {
@@ -827,9 +827,9 @@ describe('calculateSplitShareBasedOnAmount', () => {
 
       calculateSplitShareBasedOnAmount(10000n, participants, SplitType.EQUAL, splitShares, user1);
 
-      expect(splitShares[user1.id]![SplitType.EQUAL]).toBe(1n);
-      expect(splitShares[user2.id]![SplitType.EQUAL]).toBe(0n);
-      expect(splitShares[user3.id]![SplitType.EQUAL]).toBe(0n);
+      expect(splitShares[user1.id][SplitType.EQUAL]).toBe(1n);
+      expect(splitShares[user2.id][SplitType.EQUAL]).toBe(0n);
+      expect(splitShares[user3.id][SplitType.EQUAL]).toBe(0n);
     });
 
     it('should handle undefined paidBy', () => {
@@ -847,8 +847,8 @@ describe('calculateSplitShareBasedOnAmount', () => {
         undefined,
       );
 
-      expect(splitShares[user1.id]![SplitType.PERCENTAGE]).toBe(5000n);
-      expect(splitShares[user2.id]![SplitType.PERCENTAGE]).toBe(5000n);
+      expect(splitShares[user1.id][SplitType.PERCENTAGE]).toBe(5000n);
+      expect(splitShares[user2.id][SplitType.PERCENTAGE]).toBe(5000n);
     });
 
     it('should handle all split types with same data', () => {
@@ -891,7 +891,7 @@ describe('Function Reversibility Tests', () => {
       };
 
       // Apply split calculation
-      const splitResult = calculateParticipantSplit(state as AddExpenseState);
+      const splitResult = calculateParticipantSplit(state);
 
       // Reverse the calculation
       const reversedShares: Record<number, Record<SplitType, bigint | undefined>> = {};
@@ -908,9 +908,9 @@ describe('Function Reversibility Tests', () => {
       );
 
       // Check if we got back the original shares
-      expect(reversedShares[user1.id]![SplitType.EQUAL]).toBe(originalShares[0]);
-      expect(reversedShares[user2.id]![SplitType.EQUAL]).toBe(originalShares[1]);
-      expect(reversedShares[user3.id]![SplitType.EQUAL]).toBe(originalShares[2]);
+      expect(reversedShares[user1.id][SplitType.EQUAL]).toBe(originalShares[0]);
+      expect(reversedShares[user2.id][SplitType.EQUAL]).toBe(originalShares[1]);
+      expect(reversedShares[user3.id][SplitType.EQUAL]).toBe(originalShares[2]);
     });
 
     it('should properly reverse PERCENTAGE split', () => {
@@ -928,7 +928,7 @@ describe('Function Reversibility Tests', () => {
       };
 
       // Apply split calculation
-      const splitResult = calculateParticipantSplit(state as AddExpenseState);
+      const splitResult = calculateParticipantSplit(state);
 
       // Reverse the calculation
       const reversedShares: Record<number, Record<SplitType, bigint | undefined>> = {};
@@ -945,9 +945,9 @@ describe('Function Reversibility Tests', () => {
       );
 
       // Check if we got back the original percentage shares
-      expect(reversedShares[user1.id]![SplitType.PERCENTAGE]).toBe(originalShares[0]);
-      expect(reversedShares[user2.id]![SplitType.PERCENTAGE]).toBe(originalShares[1]);
-      expect(reversedShares[user3.id]![SplitType.PERCENTAGE]).toBe(originalShares[2]);
+      expect(reversedShares[user1.id][SplitType.PERCENTAGE]).toBe(originalShares[0]);
+      expect(reversedShares[user2.id][SplitType.PERCENTAGE]).toBe(originalShares[1]);
+      expect(reversedShares[user3.id][SplitType.PERCENTAGE]).toBe(originalShares[2]);
     });
 
     it('should properly reverse SHARE split', () => {
@@ -965,7 +965,7 @@ describe('Function Reversibility Tests', () => {
       };
 
       // Apply split calculation
-      const splitResult = calculateParticipantSplit(state as AddExpenseState);
+      const splitResult = calculateParticipantSplit(state);
 
       // Reverse the calculation
       const reversedShares: Record<number, Record<SplitType, bigint | undefined>> = {};
@@ -982,9 +982,9 @@ describe('Function Reversibility Tests', () => {
       );
 
       // Check if we got back proportional shares (should maintain the 2:1:1 ratio)
-      const ratio1 = Number(reversedShares[user1.id]![SplitType.SHARE]) / Number(originalShares[0]);
-      const ratio2 = Number(reversedShares[user2.id]![SplitType.SHARE]) / Number(originalShares[1]);
-      const ratio3 = Number(reversedShares[user3.id]![SplitType.SHARE]) / Number(originalShares[2]);
+      const ratio1 = Number(reversedShares[user1.id][SplitType.SHARE]) / Number(originalShares[0]);
+      const ratio2 = Number(reversedShares[user2.id][SplitType.SHARE]) / Number(originalShares[1]);
+      const ratio3 = Number(reversedShares[user3.id][SplitType.SHARE]) / Number(originalShares[2]);
 
       // All ratios should be approximately equal (accounting for rounding)
       expect(Math.abs(ratio1 - ratio2)).toBeLessThan(0.1);
@@ -1006,7 +1006,7 @@ describe('Function Reversibility Tests', () => {
       };
 
       // Apply split calculation
-      const splitResult = calculateParticipantSplit(state as AddExpenseState);
+      const splitResult = calculateParticipantSplit(state);
 
       // Reverse the calculation
       const reversedShares: Record<number, Record<SplitType, bigint | undefined>> = {};
@@ -1023,8 +1023,8 @@ describe('Function Reversibility Tests', () => {
       );
 
       // Check if we got back the original exact amounts
-      expect(reversedShares[user1.id]![SplitType.EXACT]).toBe(originalShares[0]);
-      expect(reversedShares[user2.id]![SplitType.EXACT]).toBe(originalShares[1]);
+      expect(reversedShares[user1.id][SplitType.EXACT]).toBe(originalShares[0]);
+      expect(reversedShares[user2.id][SplitType.EXACT]).toBe(originalShares[1]);
     });
 
     it('should handle ADJUSTMENT split reversal (known to have bugs)', () => {
@@ -1042,7 +1042,7 @@ describe('Function Reversibility Tests', () => {
       };
 
       // Apply split calculation
-      const splitResult = calculateParticipantSplit(state as AddExpenseState);
+      const splitResult = calculateParticipantSplit(state);
 
       // Reverse the calculation
       const reversedShares: Record<number, Record<SplitType, bigint | undefined>> = {};
@@ -1058,9 +1058,9 @@ describe('Function Reversibility Tests', () => {
         user1,
       );
 
-      expect(reversedShares[user1.id]![SplitType.ADJUSTMENT]).toBe(originalShares[0]);
-      expect(reversedShares[user2.id]![SplitType.ADJUSTMENT]).toBe(originalShares[1]);
-      expect(reversedShares[user3.id]![SplitType.ADJUSTMENT]).toBe(originalShares[2]);
+      expect(reversedShares[user1.id][SplitType.ADJUSTMENT]).toBe(originalShares[0]);
+      expect(reversedShares[user2.id][SplitType.ADJUSTMENT]).toBe(originalShares[1]);
+      expect(reversedShares[user3.id][SplitType.ADJUSTMENT]).toBe(originalShares[2]);
     });
 
     it('should handle edge case with zero amounts', () => {
@@ -1078,7 +1078,7 @@ describe('Function Reversibility Tests', () => {
       };
 
       // Apply split calculation
-      const splitResult = calculateParticipantSplit(state as AddExpenseState);
+      const splitResult = calculateParticipantSplit(state);
 
       // Reverse the calculation
       const reversedShares: Record<number, Record<SplitType, bigint | undefined>> = {};
@@ -1095,9 +1095,9 @@ describe('Function Reversibility Tests', () => {
       );
 
       // Check if we preserved the zero share
-      expect(reversedShares[user1.id]![SplitType.EQUAL]).toBe(originalShares[0]);
-      expect(reversedShares[user2.id]![SplitType.EQUAL]).toBe(originalShares[1]);
-      expect(reversedShares[user3.id]![SplitType.EQUAL]).toBe(originalShares[2]);
+      expect(reversedShares[user1.id][SplitType.EQUAL]).toBe(originalShares[0]);
+      expect(reversedShares[user2.id][SplitType.EQUAL]).toBe(originalShares[1]);
+      expect(reversedShares[user3.id][SplitType.EQUAL]).toBe(originalShares[2]);
     });
 
     it('should handle external payer scenario', () => {
@@ -1116,7 +1116,7 @@ describe('Function Reversibility Tests', () => {
       };
 
       // Apply split calculation with external payer
-      const splitResult = calculateParticipantSplit(state as AddExpenseState);
+      const splitResult = calculateParticipantSplit(state);
 
       // Reverse the calculation
       const reversedShares: Record<number, Record<SplitType, bigint | undefined>> = {};
@@ -1134,9 +1134,9 @@ describe('Function Reversibility Tests', () => {
 
       // With external payer, all participants have 0 amounts due to balance adjustment
       // So reversed shares should all be 0
-      expect(reversedShares[user1.id]![SplitType.EQUAL]).toBe(0n);
-      expect(reversedShares[user2.id]![SplitType.EQUAL]).toBe(0n);
-      expect(reversedShares[user3.id]![SplitType.EQUAL]).toBe(0n);
+      expect(reversedShares[user1.id][SplitType.EQUAL]).toBe(0n);
+      expect(reversedShares[user2.id][SplitType.EQUAL]).toBe(0n);
+      expect(reversedShares[user3.id][SplitType.EQUAL]).toBe(0n);
     });
   });
 });
