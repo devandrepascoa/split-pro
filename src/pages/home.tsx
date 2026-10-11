@@ -66,7 +66,7 @@ export default function Home() {
         </nav>
         <div className="mx-auto mt-20 flex w-full items-start justify-center gap-16 px-4 lg:max-w-5xl lg:px-0">
           <div>
-            <div className="mb-32 text-center lg:mb-0 lg:h-[70vh] lg:text-left">
+            <div className="mb-12 text-center lg:mb-0 lg:h-[70vh] lg:text-left">
               <h1 className="max-w-3xl text-center text-2xl leading-loose font-semibold text-gray-100 lg:text-left lg:text-5xl lg:leading-16">
                 {t('hero.title_part1')}{' '}
                 <span className="text-primary font-bold">{t('hero.title_highlight')}</span>.
@@ -102,7 +102,7 @@ export default function Home() {
                   </Button>
                 </Link>
               </div>
-              <div className="mt-40" />
+              <div className="lg:mt-40" />
             </div>
             <div className="mt-8 mb-20 flex justify-center lg:hidden">
               <MobileScreenShot />
