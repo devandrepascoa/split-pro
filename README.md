@@ -61,11 +61,26 @@ run `npx wrangler d1 migrations apply splitpro --local`, then `npx wrangler dev 
 
 ## Known gaps
 
-- No unit or end-to-end tests. The upstream Jest tests were mocked for Prisma, so they are excluded from
-  the TypeScript build and do not run.
+- Test coverage is small and focused on the riskiest paths (see below). There are no unit or component tests.
 - Plaid / GoCardless bank sync and the Splitwise import are untested on Workers.
 - Only Google sign-in is wired up. There is no email or password login.
 - `drizzle-kit` and `wrangler d1 migrations` own the schema. `migrations/0001_balance_view_and_triggers.sql`
   is hand-written (the `BalanceView` view and a trigger). Back it up before regenerating migrations.
+
+## Tests
+
+```sh
+pnpm test:integration   # Vitest in workerd with a real local D1 and the production migrations
+pnpm build && pnpm test:e2e   # Playwright against the built Worker (wrangler dev), 4 parallel workers
+```
+
+- `src/tests/integration`: authorization, balances and simplification, expense create/edit/delete
+  atomicity, settlements, recurring expenses (including idempotent retries), and regression tests
+  for D1 query bugs.
+- `tests/e2e`: sign-in redirect, signed-in session, groups, expenses, settle up, a stranger being
+  blocked, and recurring expenses, all against the production bundle. Google sign-in cannot be
+  automated, so the tests seed users and signed `better-auth` session cookies in a throwaway D1.
+- CI (`.github/workflows/ci.yml`) runs typecheck, integration, and e2e as three parallel jobs with
+  the pnpm store, Playwright browsers, and the build cached. The target is under 2 minutes.
 
 Bug reports for this fork go to this repository's issues. Please do not report them upstream.
