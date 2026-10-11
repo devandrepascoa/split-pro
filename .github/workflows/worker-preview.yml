@@ -32,7 +32,7 @@ jobs:
         run: |
           output="$(pnpm exec wrangler preview --name "pr-${{ github.event.pull_request.number }}" --json)"
           printf '%s\n' "$output"
-          url="$(printf '%s' "$output" | jq -er '.preview.urls[0]')"
+          url="$(printf '%s' "$output" | node -e 'let output = ""; process.stdin.on("data", chunk => output += chunk); process.stdin.on("end", () => { const match = output.match(/"preview":\s*\{[\s\S]*?"urls":\s*\[\s*"([^"]+)"/); if (!match) process.exit(1); process.stdout.write(match[1]); });')"
           echo "url=$url" >> "$GITHUB_OUTPUT"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_PREVIEW_TOKEN }}
