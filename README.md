@@ -89,12 +89,23 @@ setting belongs only in `previews.vars`, not production `vars`.
 
 - **Time Travel:** D1 keeps point-in-time history for 30 days on the Workers Paid plan.
   Restore with `npx wrangler d1 time-travel restore splitpro --timestamp=<unix>`.
-- **Daily dump to R2:** the `splitpro-backup` Workflow (03:00 UTC) exports the database through the
-  D1 REST API into the `splitpro-backups` bucket (`d1/splitpro-<date>-<time>.sql`) and prunes dumps
-  older than `BACKUP_RETENTION_DAYS` (default 90). It needs the `D1_EXPORT_TOKEN` secret, an API token
-  with **D1 Write** on your account (the export endpoint rejects D1 Read), and the `CF_ACCOUNT_ID` and
-  `D1_DATABASE_ID` vars. Restore a dump into a database with
-  `npx wrangler d1 execute <db> --remote --file <dump>.sql`.
+- **Daily backup to R2:** the `splitpro-backup` Workflow (03:00 UTC) exports D1 through the REST API
+  to `d1/splitpro-<date>-<time>.sql`, then writes a JSON manifest beside it. It also paginates the
+  `UPLOADS` bucket and copies new or changed objects to `uploads/<original-key>` in the private
+  `splitpro-backups` bucket, preserving HTTP and custom metadata. Existing upload copies are retained
+  even if their source object is later deleted, so R2 upload backups are not pruned automatically.
+  SQL dumps and manifests older than `BACKUP_RETENTION_DAYS` (default 90) are pruned. The D1 export
+  endpoint may block database requests while an export is running. It needs the `D1_EXPORT_TOKEN`
+  secret (an API token with **D1 Write**; the endpoint rejects D1 Read), and the `CF_ACCOUNT_ID` and
+  `D1_DATABASE_ID` vars.
+- **Restore:** load a SQL dump into a database with
+  `npx wrangler d1 execute <db> --remote --file <dump>.sql`, then copy objects under the backup
+  bucket's `uploads/` prefix back to `UPLOADS`, removing that prefix from each key. The application
+  code, migrations, and non-secret Worker configuration are in Git. Recreate Worker secrets from a
+  secure password manager; they cannot be recovered from a database or R2 dump.
+- Both buckets are in the same Cloudflare account. This protects against application-level deletion
+  from `UPLOADS`, but not account compromise or account-wide deletion; keep an additional copy in a
+  separate account or provider for that threat model.
 - Trigger one by hand: `npx wrangler workflows trigger splitpro-backup`.
 
 ## Tests

@@ -9,8 +9,14 @@ export type DB = DrizzleD1Database<typeof schema>;
 export interface AppBindings {
   DB: D1Database;
   UPLOADS: R2Bucket;
+  BACKUPS: R2Bucket;
   EMAIL?: SendEmail;
   SCHEDULER?: Workflow;
+  BACKUP?: Workflow;
+  CF_ACCOUNT_ID: string;
+  D1_DATABASE_ID: string;
+  D1_EXPORT_TOKEN: string;
+  BACKUP_RETENTION_DAYS?: string;
   [key: string]: unknown;
 }
 

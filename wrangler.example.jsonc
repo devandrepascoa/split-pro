@@ -42,7 +42,7 @@
       "schedules": ["* * * * *"],
     },
     {
-      // Daily D1 export to R2 (03:00 UTC). Needs the D1_EXPORT_TOKEN secret.
+      // Daily D1 and R2 uploads backup to the BACKUPS bucket (03:00 UTC).
       "name": "splitpro-backup",
       "binding": "BACKUP",
       "class_name": "BackupWorkflow",
