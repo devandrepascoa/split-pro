@@ -70,7 +70,7 @@ export default {
       headers.delete(PREVIEW_ACCESS_EMAIL_HEADER);
       headers.delete(PREVIEW_ACCESS_NAME_HEADER);
       headers.set(PREVIEW_ACCESS_EMAIL_HEADER, email);
-      if (identity.name) headers.set(PREVIEW_ACCESS_NAME_HEADER, identity.name);
+      if (identity?.name) headers.set(PREVIEW_ACCESS_NAME_HEADER, identity.name);
       request = new Request(request, { headers });
     }
 
