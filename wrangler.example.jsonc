@@ -69,6 +69,8 @@
   "previews": {
     "vars": {
       "NEXTAUTH_URL": "https://replace-with-this-preview-url",
+      "NEXTAUTH_SECRET": "preview-only-secret-change-at-runtime",
+      "NODE_ENV": "production",
       "DEFAULT_HOMEPAGE": "/balances",
       "ENABLE_SENDING_INVITES": "false",
       "DISABLE_EMAIL_SIGNUP": "true",
