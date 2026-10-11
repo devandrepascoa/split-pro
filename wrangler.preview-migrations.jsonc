@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "splitpro-preview-migrations",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "splitpro-preview",
+      "database_id": "7668fa6d-b120-4025-9bc6-2dae30c83657",
+      "migrations_dir": "migrations",
+    },
+  ],
+}
