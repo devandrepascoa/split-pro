@@ -72,3 +72,9 @@ dist/
 
 # Personal Cloudflare deployment config (copy wrangler.example.jsonc to wrangler.jsonc)
 wrangler.jsonc
+
+# e2e artifacts
+.e2e-state
+.e2e-seed.sql
+test-results
+playwright-report

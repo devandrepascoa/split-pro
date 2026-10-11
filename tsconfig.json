@@ -46,7 +46,10 @@
     "src/tests",
     "src/**/*.test.ts",
     "src/dummies",
-    "jest.config.ts",
-    "jest.setup.ts"
+    "test",
+    "tests",
+    "playwright.config.ts",
+    "vitest.config.ts",
+    ".e2e-state"
   ]
 }

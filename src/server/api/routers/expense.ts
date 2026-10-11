@@ -22,6 +22,7 @@ import {
   balanceView,
   expenseParticipants,
   expenses as expensesTable,
+  groupUsers,
   groups,
 } from '~/server/db/schema';
 import { BigMath, currencyConversion } from '~/utils/numbers';
@@ -190,16 +191,7 @@ export const expenseRouter = createTRPCRouter({
         }
 
         if (input.groupId !== null) {
-          const group = await db.query.groups.findFirst({
-            where: eq(groups.id, input.groupId),
-            columns: { archivedAt: true },
-          });
-          if (!group) {
-            throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
-          }
-          if (group.archivedAt) {
-            throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group is archived' });
-          }
+          await assertCanWriteToGroup(input.groupId, ctx.session.user.id);
         }
 
         try {
@@ -224,6 +216,13 @@ export const expenseRouter = createTRPCRouter({
     .input(createCurrencyConversionSchema)
     .mutation(async ({ input, ctx }) => {
       const { amount, rate, from, to, senderId, receiverId, groupId, expenseId } = input;
+
+      if (expenseId) {
+        await validateEditExpensePermission(expenseId, ctx.session.user.id);
+      }
+      if (groupId !== null && groupId !== undefined) {
+        await assertCanWriteToGroup(groupId, ctx.session.user.id);
+      }
 
       if (!isCurrencyCode(from) || !isCurrencyCode(to)) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid currency code' });
@@ -323,7 +322,7 @@ export const expenseRouter = createTRPCRouter({
 
   getExpenseDetails: protectedProcedure
     .input(z.object({ expenseId: z.string() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const expense = await db.query.expenses.findFirst({
         where: eq(expensesTable.id, input.expenseId),
         with: {
@@ -338,6 +337,10 @@ export const expenseRouter = createTRPCRouter({
           conversionTo: { with: { expenseParticipants: { with: { user: true } } } },
         },
       });
+
+      if (expense && !(await canAccessExpense(expense.id, ctx.session.user.id))) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Expense not found' });
+      }
 
       if (expense && expense.groupId !== null) {
         const participantIds = expense.expenseParticipants.map((ep) => ep.userId);
@@ -445,16 +448,7 @@ export const expenseRouter = createTRPCRouter({
       }
 
       if (expense.groupId !== null) {
-        const group = await db.query.groups.findFirst({
-          where: eq(groups.id, expense.groupId),
-          columns: { archivedAt: true },
-        });
-        if (!group) {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
-        }
-        if (group.archivedAt) {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group is archived' });
-        }
+        await assertCanWriteToGroup(expense.groupId, ctx.session.user.id);
       }
 
       await deleteExpense(input.expenseId, ctx.session.user.id);
@@ -505,25 +499,64 @@ export const expenseRouter = createTRPCRouter({
     }),
 });
 
-const validateEditExpensePermission = async (expenseId: string, userId: number): Promise<void> => {
-  const [expenseParticipant, addedBy] = await Promise.all([
+/**
+ * Who may see or change an expense: its payer, the user who added it, a participant, or (for
+ * group expenses) any member of the group.
+ */
+const canAccessExpense = async (expenseId: string, userId: number): Promise<boolean> => {
+  const expense = await db.query.expenses.findFirst({
+    where: eq(expensesTable.id, expenseId),
+    columns: { paidBy: true, addedBy: true, groupId: true },
+  });
+  if (!expense) {
+    return false;
+  }
+  if (expense.paidBy === userId || expense.addedBy === userId) {
+    return true;
+  }
+
+  const [participant, member] = await Promise.all([
     db.query.expenseParticipants.findFirst({
       where: and(
         eq(expenseParticipants.expenseId, expenseId),
         eq(expenseParticipants.userId, userId),
       ),
     }),
-    db.query.expenses.findFirst({
-      where: eq(expensesTable.id, expenseId),
-      columns: { addedBy: true },
-    }),
+    expense.groupId === null
+      ? undefined
+      : db.query.groupUsers.findFirst({
+          where: and(eq(groupUsers.groupId, expense.groupId), eq(groupUsers.userId, userId)),
+        }),
   ]);
+  return Boolean(participant ?? member);
+};
 
-  if (!expenseParticipant && !addedBy?.addedBy) {
+const validateEditExpensePermission = async (expenseId: string, userId: number): Promise<void> => {
+  if (!(await canAccessExpense(expenseId, userId))) {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
       message: 'You are not the participant of the expense',
     });
+  }
+};
+
+/** The group must exist, be active, and the user must be a member. */
+const assertCanWriteToGroup = async (groupId: number, userId: number): Promise<void> => {
+  const group = await db.query.groups.findFirst({
+    where: eq(groups.id, groupId),
+    columns: { archivedAt: true },
+  });
+  if (!group) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group not found' });
+  }
+  const membership = await db.query.groupUsers.findFirst({
+    where: and(eq(groupUsers.groupId, groupId), eq(groupUsers.userId, userId)),
+  });
+  if (!membership) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Not a group member' });
+  }
+  if (group.archivedAt) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Group is archived' });
   }
 };
 

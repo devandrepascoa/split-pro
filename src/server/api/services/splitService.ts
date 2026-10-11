@@ -2,7 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { BatchItem } from 'drizzle-orm/batch';
 import { nanoid } from 'nanoid';
 
-import { db } from '~/server/db';
+import { bindings, db } from '~/server/db';
 import { chunk, runBatch } from '~/server/db/batch';
 import {
   SplitType,
@@ -266,28 +266,41 @@ export async function runRecurringJob(jobid: number, now: Date = new Date()) {
   const newId = await deterministicUuid(`${jobid}:${slot.getTime()}`);
   const ts = now.getTime();
 
-  await runBatch([
-    db.run(sql`
-      INSERT OR IGNORE INTO "Expense" (
+  // Drizzle's `db.run()` cannot be part of a D1 batch, so the whole batch is built from prepared
+  // D1 statements. Drizzle builders contribute their SQL via `toSQL()`.
+  const prepare = (statement: { sql: string; params: unknown[] }) =>
+    bindings.DB.prepare(statement.sql).bind(...statement.params);
+
+  await bindings.DB.batch([
+    bindings.DB.prepare(
+      `INSERT OR IGNORE INTO "Expense" (
         "id", "paidBy", "addedBy", "name", "category", "amount", "splitType", "expenseDate",
         "createdAt", "updatedAt", "currency", "groupId", "updatedBy", "recurrenceId"
       )
-      SELECT ${newId}, "paidBy", "addedBy", "name", "category", "amount", "splitType", ${ts},
-        ${ts}, ${ts}, "currency", "groupId", "updatedBy", "recurrenceId"
-      FROM "Expense" WHERE "id" = ${templateId}`),
-    db.run(sql`
-      INSERT OR IGNORE INTO "ExpenseParticipant" ("expenseId", "userId", "amount")
-      SELECT ${newId}, "userId", "amount" FROM "ExpenseParticipant"
-      WHERE "expenseId" = ${templateId}
-        AND EXISTS (SELECT 1 FROM "Expense" WHERE "id" = ${newId})`),
-    db
-      .update(expenseRecurrences)
-      .set({ notified: false })
-      .where(eq(expenseRecurrences.jobId, jobid)),
-    db
-      .update(jobs)
-      .set({ lastRunAt: now, nextRunAt: nextRunAt(job.schedule, now) })
-      .where(eq(jobs.jobid, jobid)),
+      SELECT ?, "paidBy", "addedBy", "name", "category", "amount", "splitType", ?,
+        ?, ?, "currency", "groupId", "updatedBy", "recurrenceId"
+      FROM "Expense" WHERE "id" = ?`,
+    ).bind(newId, ts, ts, ts, templateId),
+    bindings.DB.prepare(
+      `INSERT OR IGNORE INTO "ExpenseParticipant" ("expenseId", "userId", "amount")
+      SELECT ?, "userId", "amount" FROM "ExpenseParticipant"
+      WHERE "expenseId" = ?
+        AND EXISTS (SELECT 1 FROM "Expense" WHERE "id" = ?)`,
+    ).bind(newId, templateId, newId),
+    prepare(
+      db
+        .update(expenseRecurrences)
+        .set({ notified: false })
+        .where(eq(expenseRecurrences.jobId, jobid))
+        .toSQL(),
+    ),
+    prepare(
+      db
+        .update(jobs)
+        .set({ lastRunAt: now, nextRunAt: nextRunAt(job.schedule, now) })
+        .where(eq(jobs.jobid, jobid))
+        .toSQL(),
+    ),
   ]);
 
   return { skipped: false, expenseId: newId };

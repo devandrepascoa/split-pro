@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [cloudflare-workers, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Target: the whole workflow finishes in under 2 minutes. The three jobs run in parallel and every
+# one of them restores the pnpm store (and, for e2e, the Playwright browsers and the build) from cache.
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+      - run: npx tsc --noEmit -p .
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+      # Real D1 (workerd) with the production migrations: authorization, balances, expenses, recurrence.
+      - run: pnpm test:integration
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - name: Install Chromium
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+
+      - name: Cache the production build
+        id: build-cache
+        uses: actions/cache@v4
+        with:
+          path: dist
+          key: build-${{ runner.os }}-${{ hashFiles('src/**', 'worker/**', 'public/**', 'migrations/**', 'package.json', 'pnpm-lock.yaml', 'vite*.ts', 'next.config.js', 'wrangler.example.jsonc', 'tsconfig.json') }}
+      - name: Build
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: |
+          cp wrangler.example.jsonc wrangler.jsonc
+          SKIP_ENV_VALIDATION=1 pnpm build
+
+      - run: pnpm test:e2e
+        env:
+          CI: '1'
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: test-results
+          retention-days: 3
