@@ -73,7 +73,7 @@
       "DISABLE_EMAIL_SIGNUP": "true",
       "INVITE_ONLY": "true",
       "PREVIEW_ACCESS_AUTH": "true",
-      "PREVIEW_ACCESS_AUD": "replace-with-your-access-audience-tag",
+      "PREVIEW_ACCESS_AUD": "29e464ab20d4ba84467f961fdb4051899b486e982836b746a20357503ec86228",
       "CLEAR_CACHE_CRON_RULE": "0 2 * * 0",
       "CACHE_RETENTION_INTERVAL": "2 days",
       "CURRENCY_RATE_PROVIDER": "frankfurter",
@@ -83,7 +83,7 @@
       {
         "binding": "DB",
         "database_name": "splitpro-preview",
-        "database_id": "00000000-0000-0000-0000-000000000000",
+        "database_id": "7668fa6d-b120-4025-9bc6-2dae30c83657",
         "migrations_dir": "migrations",
       },
     ],
