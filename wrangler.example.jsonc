@@ -27,7 +27,10 @@
       "migrations_dir": "migrations",
     },
   ],
-  "r2_buckets": [{ "binding": "UPLOADS", "bucket_name": "splitpro-uploads" }],
+  "r2_buckets": [
+    { "binding": "UPLOADS", "bucket_name": "splitpro-uploads" },
+    { "binding": "BACKUPS", "bucket_name": "splitpro-backups" },
+  ],
   "send_email": [{ "name": "EMAIL" }],
   "workflows": [
     {
@@ -37,6 +40,13 @@
       // Every minute: run due recurring expenses, send recurrence notifications,
       // and (on CLEAR_CACHE_CRON_RULE) clean up cached bank data and currency rates.
       "schedules": ["* * * * *"],
+    },
+    {
+      // Daily D1 export to R2 (03:00 UTC). Needs the D1_EXPORT_TOKEN secret.
+      "name": "splitpro-backup",
+      "binding": "BACKUP",
+      "class_name": "BackupWorkflow",
+      "schedules": ["0 3 * * *"],
     },
   ],
   "vars": {
@@ -51,6 +61,9 @@
     "CACHE_RETENTION_INTERVAL": "2 days",
     "CURRENCY_RATE_PROVIDER": "frankfurter",
     "UPLOAD_MAX_FILE_SIZE_MB": "10",
+    "CF_ACCOUNT_ID": "YOUR_ACCOUNT_ID",
+    "D1_DATABASE_ID": "00000000-0000-0000-0000-000000000000",
+    "BACKUP_RETENTION_DAYS": "90",
   },
   "previews": {
     "vars": {

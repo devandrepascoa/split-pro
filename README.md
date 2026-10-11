@@ -85,6 +85,18 @@ setting belongs only in `previews.vars`, not production `vars`.
 - `drizzle-kit` and `wrangler d1 migrations` own the schema. `migrations/0001_balance_view_and_triggers.sql`
   is hand-written (the `BalanceView` view and a trigger). Back it up before regenerating migrations.
 
+## Backups
+
+- **Time Travel:** D1 keeps point-in-time history for 30 days on the Workers Paid plan.
+  Restore with `npx wrangler d1 time-travel restore splitpro --timestamp=<unix>`.
+- **Daily dump to R2:** the `splitpro-backup` Workflow (03:00 UTC) exports the database through the
+  D1 REST API into the `splitpro-backups` bucket (`d1/splitpro-<date>-<time>.sql`) and prunes dumps
+  older than `BACKUP_RETENTION_DAYS` (default 90). It needs the `D1_EXPORT_TOKEN` secret, an API token
+  with **D1 Write** on your account (the export endpoint rejects D1 Read), and the `CF_ACCOUNT_ID` and
+  `D1_DATABASE_ID` vars. Restore a dump into a database with
+  `npx wrangler d1 execute <db> --remote --file <dump>.sql`.
+- Trigger one by hand: `npx wrangler workflows trigger splitpro-backup`.
+
 ## Tests
 
 ```sh
