@@ -6,6 +6,7 @@ import { type GetServerSidePropsContext } from 'next';
 import { env } from '~/env';
 import { db } from '~/server/db';
 import { accounts, sessions, users, verifications } from '~/server/db/schema';
+import { PREVIEW_ACCESS_EMAIL_HEADER, PREVIEW_ACCESS_NAME_HEADER } from '~/server/preview-access';
 
 /** Session user shape the app expects (kept from the former next-auth session). */
 export interface SessionUser {
@@ -121,7 +122,28 @@ const loadSessionUser = async (userId: number): Promise<SessionUser | null> => {
 export const getSessionFromHeaders = async (
   raw: Headers | Record<string, string | string[] | undefined>,
 ): Promise<Session | null> => {
-  const result = await auth.api.getSession({ headers: toHeaders(raw) });
+  const headers = toHeaders(raw);
+  if (env.PREVIEW_ACCESS_AUTH) {
+    const email = headers.get(PREVIEW_ACCESS_EMAIL_HEADER)?.trim().toLowerCase();
+    if (!email) return null;
+
+    await db
+      .insert(users)
+      .values({
+        email,
+        name: headers.get(PREVIEW_ACCESS_NAME_HEADER)?.trim() || email.split('@')[0],
+        emailVerified: true,
+      })
+      .onConflictDoNothing();
+
+    const accessUser = await db.query.users.findFirst({ where: eq(users.email, email) });
+    if (!accessUser) return null;
+    const user = await loadSessionUser(Number(accessUser.id));
+    if (!user) return null;
+    return { user, expires: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() };
+  }
+
+  const result = await auth.api.getSession({ headers });
   if (!result) {
     return null;
   }

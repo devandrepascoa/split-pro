@@ -6,8 +6,10 @@
  * Uncaught exceptions are re-thrown so they also appear in Workers Issues.
  */
 import handler from 'vinext/server/pages-router-entry';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 import { logError } from '../src/server/observability/errorLog';
+import { PREVIEW_ACCESS_EMAIL_HEADER, PREVIEW_ACCESS_NAME_HEADER } from '../src/server/preview-access';
 
 export { SchedulerWorkflow } from '../src/server/workflows/scheduler';
 
@@ -17,6 +19,8 @@ addEventListener('unhandledrejection', (event: Event) => {
 
 type FetchHandler = (request: Request, env: unknown, ctx: ExecutionContext) => Promise<Response>;
 const vinextFetch = (handler as unknown as { fetch: FetchHandler }).fetch;
+const accessIssuer = 'https://andrepascoa.cloudflareaccess.com';
+const accessJwks = createRemoteJWKSet(new URL(`${accessIssuer}/cdn-cgi/access/certs`));
 
 const requestContext = (request: Request) => {
   const url = new URL(request.url);
@@ -30,6 +34,46 @@ const requestContext = (request: Request) => {
 
 export default {
   async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
+    const previewAccessEnabled =
+      'object' === typeof env && null !== env && 'true' === Reflect.get(env, 'PREVIEW_ACCESS_AUTH');
+
+    if (previewAccessEnabled) {
+      let identity = await ctx.access?.getIdentity();
+      if (!identity?.email) {
+        const assertion = request.headers.get('cf-access-jwt-assertion');
+        const audience = 'object' === typeof env && null !== env && Reflect.get(env, 'PREVIEW_ACCESS_AUD');
+        if (assertion && 'string' === typeof audience) {
+          try {
+            const verified = await jwtVerify(assertion, accessJwks, {
+              issuer: accessIssuer,
+              audience,
+            });
+            if ('string' === typeof verified.payload.email) {
+              identity = {
+                email: verified.payload.email,
+                name: 'string' === typeof verified.payload.name ? verified.payload.name : undefined,
+              };
+            }
+          } catch (error) {
+            logError('worker', error, { ...requestContext(request), phase: 'access-identity-fallback' });
+          }
+        }
+      }
+
+      const email = identity?.email?.trim().toLowerCase();
+      if (!email) {
+        return new Response('Cloudflare Access authentication was not verified.', { status: 403 });
+      }
+
+      // Replace, never trust, identity headers supplied by the incoming client.
+      const headers = new Headers(request.headers);
+      headers.delete(PREVIEW_ACCESS_EMAIL_HEADER);
+      headers.delete(PREVIEW_ACCESS_NAME_HEADER);
+      headers.set(PREVIEW_ACCESS_EMAIL_HEADER, email);
+      if (identity.name) headers.set(PREVIEW_ACCESS_NAME_HEADER, identity.name);
+      request = new Request(request, { headers });
+    }
+
     let response: Response;
     try {
       response = await vinextFetch(request, env, ctx);

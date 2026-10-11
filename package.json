@@ -45,6 +45,7 @@
     "i18next-browser-languagedetector": "^8.2.1",
     "i18next-http-backend": "^3.0.6",
     "input-otp": "^1.2.3",
+    "jose": "6.2.12",
     "lucide-react": "^0.544.0",
     "nanoid": "^5.0.6",
     "next-i18next": "^15.4.3",

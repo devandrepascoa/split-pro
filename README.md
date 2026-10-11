@@ -59,6 +59,24 @@ a domain on Cloudflare, and a Google OAuth client.
 Local development: put the same values in `.dev.vars` (git-ignored, with `NEXTAUTH_URL=http://localhost:8787`),
 run `npx wrangler d1 migrations apply splitpro --local`, then `npx wrangler dev --port 8787`.
 
+## Cloudflare Worker Previews
+
+`wrangler.example.jsonc` includes a `previews` block with non-production settings and D1/R2 bindings.
+Run `npx wrangler preview --name <preview-name>` from the branch you want to preview; Wrangler
+defaults the name to the current Git branch. Set `NEXTAUTH_URL` in that branch's `previews.vars` to
+its actual Preview URL. Preview URLs are public unless protected by Cloudflare Access.
+
+The example D1 ID and Access audience are placeholders. Create a non-production D1 database and R2
+bucket, then set their IDs/names in the `previews` block. D1/R2 resources are shared whenever
+previews use the same ID/name. For per-branch isolation, create separate resources for each branch,
+update that branch's `previews` bindings and D1 migration target, and apply migrations to that D1
+before deploying its Preview. Do not point Preview bindings at production resources.
+
+When protecting a Preview with Cloudflare Access, set `PREVIEW_ACCESS_AUTH=true`, set
+`PREVIEW_ACCESS_AUD` to the Access application's audience tag, and ensure the Access policy covers
+the Preview hostname. The Worker verifies the Access identity and maps it to an app session; this
+setting belongs only in `previews.vars`, not production `vars`.
+
 ## Known gaps
 
 - Test coverage is small and focused on the riskiest paths (see below). There are no unit or component tests.
