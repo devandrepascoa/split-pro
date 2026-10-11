@@ -9,6 +9,7 @@ import React, { type ComponentProps, useCallback, useMemo, useState } from 'reac
 import { toast } from 'sonner';
 
 import { useIntlCronParser } from '~/hooks/useIntlCronParser';
+import { useInvalidateExpenseQueries } from '~/hooks/useInvalidateExpenseQueries';
 import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';
 import { cronFromBackend } from '~/lib/cron';
 import { DEFAULT_CATEGORY } from '~/lib/category';
@@ -272,7 +273,7 @@ export const EditSettlement: React.FC<{ expense: ExpenseDetailsOutput }> = ({ ex
   );
 
   const addExpenseMutation = api.expense.addOrEditExpense.useMutation();
-  const apiUtils = api.useUtils();
+  const invalidateExpenseQueries = useInvalidateExpenseQueries();
 
   const onCurrencyInputValueChange = useCallback(
     ({ strValue, bigIntValue }: { strValue?: string; bigIntValue?: bigint }) => {
@@ -314,8 +315,8 @@ export const EditSettlement: React.FC<{ expense: ExpenseDetailsOutput }> = ({ ex
         expenseDate,
       },
       {
-        onSuccess: () => {
-          apiUtils.invalidate().catch(console.error);
+        onSuccess: async () => {
+          await invalidateExpenseQueries();
         },
         onError: (error) => {
           console.error('Error while saving expense:', error);
@@ -323,7 +324,16 @@ export const EditSettlement: React.FC<{ expense: ExpenseDetailsOutput }> = ({ ex
         },
       },
     );
-  }, [amount, sender, receiver, expense, addExpenseMutation, expenseDate, apiUtils, t]);
+  }, [
+    amount,
+    sender,
+    receiver,
+    expense,
+    addExpenseMutation,
+    expenseDate,
+    invalidateExpenseQueries,
+    t,
+  ]);
 
   if (!sender || !receiver) {
     return null;

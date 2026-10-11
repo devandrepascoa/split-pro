@@ -6,6 +6,7 @@ import { useTranslation } from 'next-i18next';
 import { toast } from 'sonner';
 
 import { extractTemplateExpenseId } from '~/lib/cron';
+import { useInvalidateExpenseQueries } from '~/hooks/useInvalidateExpenseQueries';
 import { api } from '~/utils/api';
 
 import { Button } from '../ui/button';
@@ -26,6 +27,7 @@ export const DeleteExpense: React.FC<DeleteExpenseProps> = ({ expenseId, recurre
   const router = useRouter();
 
   const deleteExpenseMutation = api.expense.deleteExpense.useMutation();
+  const invalidateExpenseQueries = useInvalidateExpenseQueries();
 
   const isTemplate = useMemo(
     () => (recurrence ? extractTemplateExpenseId(recurrence.job.command) === expenseId : false),
@@ -36,6 +38,7 @@ export const DeleteExpense: React.FC<DeleteExpenseProps> = ({ expenseId, recurre
   const onDeleteExpense = useCallback(async () => {
     try {
       await deleteExpenseMutation.mutateAsync({ expenseId });
+      await invalidateExpenseQueries();
     } catch (error) {
       if (error instanceof Error) {
         toast.error(`Error: ${error.message}`);
@@ -46,7 +49,7 @@ export const DeleteExpense: React.FC<DeleteExpenseProps> = ({ expenseId, recurre
       return;
     }
     router.back();
-  }, [expenseId, deleteExpenseMutation, router]);
+  }, [expenseId, deleteExpenseMutation, invalidateExpenseQueries, router]);
 
   const description = useMemo(() => {
     if (!isPartOfRecurrence) {

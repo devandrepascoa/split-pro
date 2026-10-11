@@ -3,6 +3,7 @@ import { ArrowRightIcon } from 'lucide-react';
 import React, { useState } from 'react';
 import { toast } from 'sonner';
 
+import { useInvalidateExpenseQueries } from '~/hooks/useInvalidateExpenseQueries';
 import { DEFAULT_CATEGORY } from '~/lib/category';
 import { api } from '~/utils/api';
 import { BigMath } from '~/utils/numbers';
@@ -25,6 +26,7 @@ export const SettleUp: React.FC<
   const { t, displayName, getCurrencyHelpersCached } = useTranslationWithUtils();
   const { data } = useSession();
   const currentUser = data?.user;
+  const invalidateExpenseQueries = useInvalidateExpenseQueries();
 
   if (!currentUser) {
     return null;
@@ -59,7 +61,6 @@ export const SettleUp: React.FC<
   }
 
   const addExpenseMutation = api.expense.addOrEditExpense.useMutation();
-  const utils = api.useUtils();
 
   const saveExpense = React.useCallback(() => {
     if (!balanceToSettle || !amount || !currentUser) {
@@ -87,9 +88,8 @@ export const SettleUp: React.FC<
         groupId: balanceToSettle.groupId,
       },
       {
-        onSuccess: () => {
-          utils.user.invalidate().catch(console.error);
-          utils.expense.invalidate().catch(console.error);
+        onSuccess: async () => {
+          await invalidateExpenseQueries();
         },
         onError: (error) => {
           console.error('Error while saving expense:', error);
@@ -104,7 +104,7 @@ export const SettleUp: React.FC<
     isCurrentUserPaying,
     friend,
     addExpenseMutation,
-    utils,
+    invalidateExpenseQueries,
     t,
   ]);
 
