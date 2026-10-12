@@ -11,7 +11,10 @@
       "migrations_dir": "../migrations",
     },
   ],
-  "r2_buckets": [{ "binding": "UPLOADS", "bucket_name": "splitpro-test-uploads" }],
+  "r2_buckets": [
+    { "binding": "UPLOADS", "bucket_name": "splitpro-test-uploads" },
+    { "binding": "BACKUPS", "bucket_name": "splitpro-test-backups" },
+  ],
   "vars": {
     "SKIP_ENV_VALIDATION": "1",
     "NEXTAUTH_URL": "http://localhost:8787",

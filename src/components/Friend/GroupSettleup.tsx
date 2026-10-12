@@ -2,6 +2,7 @@ import { SplitType, type User } from '~/server/db/types';
 import { ArrowRightIcon } from 'lucide-react';
 import React, { type ReactNode, useState } from 'react';
 import { toast } from 'sonner';
+import { useInvalidateExpenseQueries } from '~/hooks/useInvalidateExpenseQueries';
 import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';
 import { DEFAULT_CATEGORY } from '~/lib/category';
 import { api } from '~/utils/api';
@@ -38,7 +39,7 @@ export const GroupSettleUp: React.FC<{
   );
 
   const addExpenseMutation = api.expense.addOrEditExpense.useMutation();
-  const utils = api.useUtils();
+  const invalidateExpenseQueries = useInvalidateExpenseQueries();
 
   const sender = 0 > _amount ? user : friend;
   const receiver = 0 > _amount ? friend : user;
@@ -69,8 +70,8 @@ export const GroupSettleUp: React.FC<{
         category: DEFAULT_CATEGORY,
       },
       {
-        onSuccess: () => {
-          utils.group.invalidate().catch(console.error);
+        onSuccess: async () => {
+          await invalidateExpenseQueries();
         },
         onError: (error) => {
           console.error('Error while saving expense:', error);
@@ -78,7 +79,16 @@ export const GroupSettleUp: React.FC<{
         },
       },
     );
-  }, [sender, receiver, amount, utils, addExpenseMutation, currency, groupId, t]);
+  }, [
+    sender,
+    receiver,
+    amount,
+    invalidateExpenseQueries,
+    addExpenseMutation,
+    currency,
+    groupId,
+    t,
+  ]);
 
   return (
     <AppDrawer

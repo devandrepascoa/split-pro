@@ -11,6 +11,7 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { logError } from '../src/server/observability/errorLog';
 import { PREVIEW_ACCESS_EMAIL_HEADER, PREVIEW_ACCESS_NAME_HEADER } from '../src/server/preview-access';
 
+export { BackupWorkflow } from '../src/server/workflows/backup';
 export { SchedulerWorkflow } from '../src/server/workflows/scheduler';
 
 addEventListener('unhandledrejection', (event: Event) => {

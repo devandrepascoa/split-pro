@@ -24,10 +24,14 @@
       "binding": "DB",
       "database_name": "splitpro",
       "database_id": "00000000-0000-0000-0000-000000000000",
+      "preview_database_id": "7668fa6d-b120-4025-9bc6-2dae30c83657",
       "migrations_dir": "migrations",
     },
   ],
-  "r2_buckets": [{ "binding": "UPLOADS", "bucket_name": "splitpro-uploads" }],
+  "r2_buckets": [
+    { "binding": "UPLOADS", "bucket_name": "splitpro-uploads" },
+    { "binding": "BACKUPS", "bucket_name": "splitpro-backups" },
+  ],
   "send_email": [{ "name": "EMAIL" }],
   "workflows": [
     {
@@ -37,6 +41,13 @@
       // Every minute: run due recurring expenses, send recurrence notifications,
       // and (on CLEAR_CACHE_CRON_RULE) clean up cached bank data and currency rates.
       "schedules": ["* * * * *"],
+    },
+    {
+      // Daily D1 and R2 uploads backup to the BACKUPS bucket (03:00 UTC).
+      "name": "splitpro-backup",
+      "binding": "BACKUP",
+      "class_name": "BackupWorkflow",
+      "schedules": ["0 3 * * *"],
     },
   ],
   "vars": {
@@ -51,6 +62,9 @@
     "CACHE_RETENTION_INTERVAL": "2 days",
     "CURRENCY_RATE_PROVIDER": "frankfurter",
     "UPLOAD_MAX_FILE_SIZE_MB": "10",
+    "CF_ACCOUNT_ID": "YOUR_ACCOUNT_ID",
+    "D1_DATABASE_ID": "00000000-0000-0000-0000-000000000000",
+    "BACKUP_RETENTION_DAYS": "90",
   },
   "previews": {
     "vars": {
@@ -62,7 +76,7 @@
       "DISABLE_EMAIL_SIGNUP": "true",
       "INVITE_ONLY": "true",
       "PREVIEW_ACCESS_AUTH": "true",
-      "PREVIEW_ACCESS_AUD": "replace-with-your-access-audience-tag",
+      "PREVIEW_ACCESS_AUD": "29e464ab20d4ba84467f961fdb4051899b486e982836b746a20357503ec86228",
       "CLEAR_CACHE_CRON_RULE": "0 2 * * 0",
       "CACHE_RETENTION_INTERVAL": "2 days",
       "CURRENCY_RATE_PROVIDER": "frankfurter",
@@ -72,7 +86,7 @@
       {
         "binding": "DB",
         "database_name": "splitpro-preview",
-        "database_id": "00000000-0000-0000-0000-000000000000",
+        "database_id": "7668fa6d-b120-4025-9bc6-2dae30c83657",
         "migrations_dir": "migrations",
       },
     ],
