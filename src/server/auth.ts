@@ -99,6 +99,45 @@ const toHeaders = (raw: Headers | Record<string, string | string[] | undefined>)
   return headers;
 };
 
+const isLocalDevHost = (host: string | null): boolean => {
+  if (!host) return false;
+
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${host}`).hostname;
+  } catch {
+    return false;
+  }
+
+  if (
+    'localhost' === hostname ||
+    hostname.endsWith('.localhost') ||
+    '[::1]' === hostname
+  ) {
+    return true;
+  }
+
+  const octets = hostname.split('.').map(Number);
+  if (
+    4 !== octets.length ||
+    octets.some((octet) => !Number.isInteger(octet) || 0 > octet || 255 < octet)
+  ) {
+    return false;
+  }
+
+  const first = octets[0];
+  const second = octets[1];
+  if (undefined === first || undefined === second) return false;
+
+  return (
+    10 === first ||
+    127 === first ||
+    (192 === first && 168 === second) ||
+    (172 === first && 16 <= second && 31 >= second) ||
+    (169 === first && 254 === second)
+  );
+};
+
 const loadSessionUser = async (userId: number): Promise<SessionUser | null> => {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) {
@@ -123,6 +162,21 @@ export const getSessionFromHeaders = async (
   raw: Headers | Record<string, string | string[] | undefined>,
 ): Promise<Session | null> => {
   const headers = toHeaders(raw);
+  // Limit the opt-in demo identity to localhost/private-network requests.
+  if (env.LOCAL_DEV_AUTH && isLocalDevHost(headers.get('host'))) {
+    const email = 'local-dev@splitpro.test';
+    await db
+      .insert(users)
+      .values({ email, name: 'Local Developer', emailVerified: true })
+      .onConflictDoNothing();
+
+    const localDevUser = await db.query.users.findFirst({ where: eq(users.email, email) });
+    if (!localDevUser) return null;
+    const user = await loadSessionUser(localDevUser.id);
+    if (!user) return null;
+    return { user, expires: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() };
+  }
+
   if (env.PREVIEW_ACCESS_AUTH) {
     const email = headers.get(PREVIEW_ACCESS_EMAIL_HEADER)?.trim().toLowerCase();
     if (!email) return null;
