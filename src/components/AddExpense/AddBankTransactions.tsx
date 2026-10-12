@@ -1,4 +1,5 @@
 import React, { useCallback } from 'react';
+import { useInvalidateExpenseQueries } from '~/hooks/useInvalidateExpenseQueries';
 import { calculateParticipantSplit, useAddExpenseStore } from '~/store/addStore';
 import type { TransactionAddInputModel } from '~/types';
 import { BankingTransactionList } from './BankTransactions/BankingTransactionList';
@@ -35,6 +36,7 @@ const AddBankTransactions: React.FC<{
   } = useAddExpenseStore((s) => s.actions);
 
   const addExpenseMutation = api.expense.addOrEditExpense.useMutation();
+  const invalidateExpenseQueries = useInvalidateExpenseQueries();
 
   const router = useRouter();
 
@@ -99,7 +101,8 @@ const AddBankTransactions: React.FC<{
       }) as CreateExpense[];
 
     await addExpenseMutation.mutateAsync(expenses, {
-      onSuccess: () => {
+      onSuccess: async () => {
+        await invalidateExpenseQueries();
         setMultipleTransactions([]);
         setIsTransactionLoading(false);
         router.back();
@@ -114,6 +117,7 @@ const AddBankTransactions: React.FC<{
     router,
     resetState,
     addExpenseMutation,
+    invalidateExpenseQueries,
     group,
     paidBy,
     splitType,

@@ -5,6 +5,7 @@ import { useRouter } from 'next/router';
 import React, { useCallback } from 'react';
 
 import { type CurrencyCode } from '~/lib/currency';
+import { useInvalidateExpenseQueries } from '~/hooks/useInvalidateExpenseQueries';
 import { useAddExpenseStore } from '~/store/addStore';
 import { api } from '~/utils/api';
 
@@ -72,6 +73,7 @@ export const AddOrEditExpensePage: React.FC<{
   } = useAddExpenseStore((s) => s.actions);
 
   const addExpenseMutation = api.expense.addOrEditExpense.useMutation();
+  const invalidateExpenseQueries = useInvalidateExpenseQueries();
   const updateProfile = api.user.updateUserDetail.useMutation();
   const { update } = useSession();
 
@@ -137,8 +139,10 @@ export const AddOrEditExpensePage: React.FC<{
           },
         ],
         {
-          onSuccess: (d) => {
+          onSuccess: async (d) => {
             if (d) {
+              await invalidateExpenseQueries();
+
               if (multipleTransactions.length > 0) {
                 const allTransactions = [...multipleTransactions];
                 const transactionToAdd = allTransactions.pop();
@@ -198,6 +202,7 @@ export const AddOrEditExpensePage: React.FC<{
     expenseId,
     router,
     addExpenseMutation,
+    invalidateExpenseQueries,
     group,
     paidBy,
     splitType,
