@@ -1,6 +1,6 @@
 import { SplitType, type User } from '~/server/db/types';
 import { ArrowRightIcon } from 'lucide-react';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
 import { useInvalidateExpenseQueries } from '~/hooks/useInvalidateExpenseQueries';
@@ -27,28 +27,25 @@ export const SettleUp: React.FC<
   const { data } = useSession();
   const currentUser = data?.user;
   const invalidateExpenseQueries = useInvalidateExpenseQueries();
-
-  if (!currentUser) {
-    return null;
-  }
-
-  if (!balances) {
-    return (
-      <Button size="sm" variant="outline" responsiveIcon disabled>
-        <span className="xs:inline hidden">{t('actions.settle_up')}</span>
-      </Button>
-    );
-  }
+  const availableBalances = balances ?? [];
 
   const [balanceToSettle, setBalanceToSettle] = useState<MinimalBalance | undefined>(
-    1 < balances.length ? undefined : balances[0],
+    1 === availableBalances.length ? availableBalances[0] : undefined,
   );
   const [amount, setAmount] = useState<bigint>(
-    1 < balances.length ? 0n : BigMath.abs(balances[0]?.amount ?? 0n),
+    1 === availableBalances.length ? BigMath.abs(availableBalances[0]?.amount ?? 0n) : 0n,
   );
   const [amountStr, setAmountStr] = useState<string>(
     getCurrencyHelpersCached(balanceToSettle?.currency ?? '').toUIString(amount),
   );
+
+  useEffect(() => {
+    const nextBalance = 1 === balances?.length ? balances[0] : undefined;
+    const nextAmount = BigMath.abs(nextBalance?.amount ?? 0n);
+    setBalanceToSettle(nextBalance);
+    setAmount(nextAmount);
+    setAmountStr(getCurrencyHelpersCached(nextBalance?.currency ?? '').toUIString(nextAmount));
+  }, [balances, getCurrencyHelpersCached]);
 
   const isCurrentUserPaying = 0 > (balanceToSettle?.amount ?? 0);
 
@@ -126,6 +123,18 @@ export const SettleUp: React.FC<
     }
   }, [balanceToSettle]);
 
+  if (!currentUser) {
+    return null;
+  }
+
+  if (!balances) {
+    return (
+      <Button size="sm" variant="outline" responsiveIcon disabled>
+        <span className="xs:inline hidden">{t('actions.settle_up')}</span>
+      </Button>
+    );
+  }
+
   return (
     <AppDrawer
       trigger={children}
@@ -142,7 +151,7 @@ export const SettleUp: React.FC<
     >
       {!balanceToSettle ? (
         <div>
-          {balances?.map((b) => (
+          {availableBalances.map((b) => (
             <div
               key={`${b.friendId}-${b.currency}-${b.groupId ?? 'null'}`}
               onClick={() => onSelectBalance(b)}
