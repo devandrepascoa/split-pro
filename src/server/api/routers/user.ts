@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import { type User } from 'next-auth';
+import type { SessionUser as User } from '~/server/auth';
 import { z } from 'zod';
 
 import { env } from '~/env';
@@ -10,7 +10,18 @@ import {
 } from '~/lib/defaultSplit';
 import { simplifyDebts } from '~/lib/simplify';
 import { createTRPCRouter, protectedProcedure } from '~/server/api/trpc';
+import { and, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
+
 import { db } from '~/server/db';
+import { runInBackground } from '~/server/observability/background';
+import {
+  balanceView,
+  expenses,
+  friendDefaultSplits,
+  groups,
+  pushNotifications,
+  users,
+} from '~/server/db/schema';
 import { sendFeedbackEmail, sendInviteEmail } from '~/server/mailer';
 import { SplitwiseGroupSchema, SplitwiseUserSchema } from '~/types';
 
@@ -29,56 +40,53 @@ export const userRouter = createTRPCRouter({
   me: protectedProcedure.query(({ ctx }) => ctx.session.user),
 
   getFriends: protectedProcedure.query(async ({ ctx }) => {
-    const friends = await db.balanceView.findMany({
-      where: { userId: ctx.session.user.id, friendId: { notIn: ctx.session.user.hiddenFriendIds } },
-      include: { friend: true },
-      distinct: ['friendId'],
-    });
+    const friends = await db
+      .selectDistinct({ friend: users })
+      .from(balanceView)
+      .innerJoin(users, eq(users.id, balanceView.friendId))
+      .where(
+        and(
+          eq(balanceView.userId, ctx.session.user.id),
+          notInArray(balanceView.friendId, ctx.session.user.hiddenFriendIds),
+        ),
+      );
 
     return friends.map((f) => f.friend);
   }),
 
   getOwnExpenses: protectedProcedure.query(async ({ ctx }) => {
-    const expenses = await db.expense.findMany({
-      where: {
-        paidBy: ctx.session.user.id,
-        deletedBy: null,
-      },
-      orderBy: {
-        expenseDate: 'desc',
-      },
-      include: {
-        group: true,
-      },
+    const ownExpenses = await db.query.expenses.findMany({
+      where: and(eq(expenses.paidBy, ctx.session.user.id), isNull(expenses.deletedBy)),
+      orderBy: [desc(expenses.expenseDate)],
+      with: { group: true },
     });
 
-    return expenses;
+    return ownExpenses;
   }),
 
   inviteFriend: protectedProcedure
     .input(z.object({ email: z.string(), sendInviteEmail: z.boolean().optional() }))
     .mutation(async ({ input, ctx: { session } }) => {
-      const friend = await db.user.findUnique({
-        where: {
-          email: input.email,
-        },
-      });
+      const email = input.email.toLowerCase();
+      const friend = await db.query.users.findFirst({ where: eq(users.email, email) });
 
       if (friend) {
         return friend;
       }
 
-      const user = await db.user.create({
-        data: {
-          email: input.email,
-          name: input.email.split('@')[0],
-        },
-      });
+      const [user] = await db
+        .insert(users)
+        .values({ email, name: email.split('@')[0] })
+        .returning();
+      if (!user) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to create user' });
+      }
 
       if (input.sendInviteEmail) {
-        sendInviteEmail(input.email, session.user.name ?? session.user.email ?? '').catch((err) => {
-          console.error('Error sending invite email', err);
-        });
+        runInBackground(
+          'invite-email',
+          sendInviteEmail(input.email, session.user.name ?? session.user.email ?? ''),
+        );
       }
 
       return user;
@@ -87,21 +95,22 @@ export const userRouter = createTRPCRouter({
   getBalancesWithFriend: protectedProcedure
     .input(z.object({ friendId: z.number() }))
     .query(async ({ input, ctx }) => {
-      const rawBalances = await db.balanceView.findMany({
-        where: {
-          userId: ctx.session.user.id,
-          friendId: input.friendId,
-          amount: { not: 0 },
-        },
-        include: {
-          group: {
-            select: {
-              name: true,
-              simplifyDebts: true,
-            },
-          },
-        },
-      });
+      const rawBalances = await db
+        .select({
+          groupId: balanceView.groupId,
+          currency: balanceView.currency,
+          amount: balanceView.amount,
+          group: { name: groups.name, simplifyDebts: groups.simplifyDebts },
+        })
+        .from(balanceView)
+        .leftJoin(groups, eq(groups.id, balanceView.groupId))
+        .where(
+          and(
+            eq(balanceView.userId, ctx.session.user.id),
+            eq(balanceView.friendId, input.friendId),
+            ne(balanceView.amount, 0n),
+          ),
+        );
 
       const processedBalances = await Promise.all(
         rawBalances.map(async ({ groupId, currency, amount, group }) => {
@@ -117,9 +126,10 @@ export const userRouter = createTRPCRouter({
           }
 
           // For simplifyDebts groups, fetch all group balances and simplify
-          const allGroupBalances = await db.balanceView.findMany({
-            where: { groupId, currency },
-          });
+          const allGroupBalances = await db
+            .select()
+            .from(balanceView)
+            .where(and(eq(balanceView.groupId, groupId), eq(balanceView.currency, currency)));
 
           const simplified = simplifyDebts(allGroupBalances);
 
@@ -156,14 +166,11 @@ export const userRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const user = await db.user.update({
-        where: {
-          id: ctx.session.user.id,
-        },
-        data: {
-          ...input,
-        },
-      });
+      const [user] = await db
+        .update(users)
+        .set(input)
+        .where(eq(users.id, ctx.session.user.id))
+        .returning();
 
       return user;
     }),
@@ -171,11 +178,7 @@ export const userRouter = createTRPCRouter({
   getUserDetails: protectedProcedure
     .input(z.object({ userId: z.number() }))
     .query(async ({ input }) => {
-      const user = await db.user.findUnique({
-        where: {
-          id: input.userId,
-        },
-      });
+      const user = await db.query.users.findFirst({ where: eq(users.id, input.userId) });
 
       return user;
     }),
@@ -183,21 +186,25 @@ export const userRouter = createTRPCRouter({
   submitFeedback: protectedProcedure
     .input(z.object({ feedback: z.string().min(10) }))
     .mutation(async ({ input, ctx }) => {
-      await sendFeedbackEmail(input.feedback, ctx.session.user as User);
+      await sendFeedbackEmail(input.feedback, ctx.session.user);
     }),
 
   getFriend: protectedProcedure
     .input(z.object({ friendId: z.number() }))
     .query(async ({ input, ctx }) => {
-      const friend = await db.user.findUnique({
-        where: {
-          id: input.friendId,
-          userBalances: {
-            some: {
-              friendId: ctx.session.user.id,
-            },
-          },
-        },
+      const friend = await db.query.users.findFirst({
+        // Uncorrelated IN subquery: relational queries alias the outer table, so a correlated
+        // Reference to `users.id` would render as "User"."id" and fail on D1.
+        where: and(
+          eq(users.id, input.friendId),
+          inArray(
+            users.id,
+            db
+              .select({ userId: balanceView.userId })
+              .from(balanceView)
+              .where(eq(balanceView.friendId, ctx.session.user.id)),
+          ),
+        ),
       });
 
       if (!friend) {
@@ -206,13 +213,11 @@ export const userRouter = createTRPCRouter({
 
       const [userAId, userBId] = toSortedFriendPair(ctx.session.user.id, input.friendId);
 
-      const friendDefaultSplit = await db.friendDefaultSplit.findUnique({
-        where: {
-          userAId_userBId: {
-            userAId,
-            userBId,
-          },
-        },
+      const friendDefaultSplit = await db.query.friendDefaultSplits.findFirst({
+        where: and(
+          eq(friendDefaultSplits.userAId, userAId),
+          eq(friendDefaultSplits.userBId, userBId),
+        ),
       });
 
       const defaultSplit =
@@ -248,15 +253,19 @@ export const userRouter = createTRPCRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const friend = await db.user.findUnique({
-        where: {
-          id: input.friendId,
-          userBalances: {
-            some: {
-              friendId: ctx.session.user.id,
-            },
-          },
-        },
+      const friend = await db.query.users.findFirst({
+        // Uncorrelated IN subquery: relational queries alias the outer table, so a correlated
+        // Reference to `users.id` would render as "User"."id" and fail on D1.
+        where: and(
+          eq(users.id, input.friendId),
+          inArray(
+            users.id,
+            db
+              .select({ userId: balanceView.userId })
+              .from(balanceView)
+              .where(eq(balanceView.friendId, ctx.session.user.id)),
+          ),
+        ),
       });
 
       if (!friend) {
@@ -271,19 +280,17 @@ export const userRouter = createTRPCRouter({
       const [userAId, userBId] = toSortedFriendPair(ctx.session.user.id, input.friendId);
       const serialized = serializeDefaultSplit(parsed);
 
-      await db.friendDefaultSplit.upsert({
-        where: { userAId_userBId: { userAId, userBId } },
-        create: {
-          userAId,
-          userBId,
-          splitType: serialized.splitType,
-          shares: serialized.shares,
-        },
-        update: {
-          splitType: serialized.splitType,
-          shares: serialized.shares,
-        },
-      });
+      await db
+        .insert(friendDefaultSplits)
+        .values({ userAId, userBId, splitType: serialized.splitType, shares: serialized.shares })
+        .onConflictDoUpdate({
+          target: [friendDefaultSplits.userAId, friendDefaultSplits.userBId],
+          set: {
+            splitType: serialized.splitType,
+            shares: serialized.shares,
+            updatedAt: new Date(),
+          },
+        });
 
       return serialized;
     }),
@@ -292,7 +299,11 @@ export const userRouter = createTRPCRouter({
     .input(z.object({ friendId: z.number() }))
     .mutation(async ({ input, ctx }) => {
       const [userAId, userBId] = toSortedFriendPair(ctx.session.user.id, input.friendId);
-      await db.friendDefaultSplit.deleteMany({ where: { userAId, userBId } });
+      await db
+        .delete(friendDefaultSplits)
+        .where(
+          and(eq(friendDefaultSplits.userAId, userAId), eq(friendDefaultSplits.userBId, userBId)),
+        );
       return true;
     }),
 
@@ -308,22 +319,13 @@ export const userRouter = createTRPCRouter({
         });
       }
 
-      await db.pushNotification.upsert({
-        where: {
-          userId_endpoint: {
-            userId: ctx.session.user.id,
-            endpoint,
-          },
-        },
-        create: {
-          userId: ctx.session.user.id,
-          endpoint,
-          subscription: input.subscription,
-        },
-        update: {
-          subscription: input.subscription,
-        },
-      });
+      await db
+        .insert(pushNotifications)
+        .values({ userId: ctx.session.user.id, endpoint, subscription: input.subscription })
+        .onConflictDoUpdate({
+          target: [pushNotifications.userId, pushNotifications.endpoint],
+          set: { subscription: input.subscription },
+        });
     }),
 
   deletePushNotification: protectedProcedure
@@ -334,15 +336,14 @@ export const userRouter = createTRPCRouter({
         return;
       }
 
-      await db.pushNotification
-        .delete({
-          where: {
-            userId_endpoint: {
-              userId: ctx.session.user.id,
-              endpoint,
-            },
-          },
-        })
+      await db
+        .delete(pushNotifications)
+        .where(
+          and(
+            eq(pushNotifications.userId, ctx.session.user.id),
+            eq(pushNotifications.endpoint, endpoint),
+          ),
+        )
         .catch(() => null);
     }),
 
@@ -361,22 +362,19 @@ export const userRouter = createTRPCRouter({
   deleteFriend: protectedProcedure
     .input(z.object({ friendId: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      const friendBalances = await db.balanceView.groupBy({
-        by: ['currency'],
-        _sum: { amount: true },
-        where: {
-          userId: ctx.session.user.id,
-          friendId: input.friendId,
-          amount: { not: 0 },
-        },
-        having: {
-          amount: {
-            _sum: {
-              not: 0,
-            },
-          },
-        },
-      });
+      const total = sql<number>`SUM(${balanceView.amount})`;
+      const friendBalances = await db
+        .select({ currency: balanceView.currency, amount: total })
+        .from(balanceView)
+        .where(
+          and(
+            eq(balanceView.userId, ctx.session.user.id),
+            eq(balanceView.friendId, input.friendId),
+            ne(balanceView.amount, 0n),
+          ),
+        )
+        .groupBy(balanceView.currency)
+        .having(sql`${total} != 0`);
 
       if (0 < friendBalances.length) {
         throw new TRPCError({
@@ -385,16 +383,18 @@ export const userRouter = createTRPCRouter({
         });
       }
 
-      await db.user.update({
-        where: {
-          id: ctx.session.user.id,
-        },
-        data: {
-          hiddenFriendIds: {
-            push: input.friendId,
-          },
-        },
-      });
+      // Atomic JSON array append (no read-modify-write race).
+      await db
+        .update(users)
+        .set({
+          hiddenFriendIds: sql`(
+            SELECT json_group_array(value) FROM (
+              SELECT value FROM json_each(${users.hiddenFriendIds})
+              UNION SELECT ${input.friendId}
+            )
+          )`,
+        })
+        .where(eq(users.id, ctx.session.user.id));
     }),
 
   downloadData: protectedProcedure.mutation(async ({ ctx }) => {
@@ -422,13 +422,10 @@ export const userRouter = createTRPCRouter({
 });
 
 export const getUserMap = async (userIds: number[]) => {
-  const users = await db.user.findMany({
-    where: {
-      id: { in: userIds },
-    },
-  });
+  const found =
+    0 === userIds.length ? [] : await db.select().from(users).where(inArray(users.id, userIds));
 
-  return Object.fromEntries(users.map((u) => [u.id, u]));
+  return Object.fromEntries(found.map((u) => [u.id, u]));
 };
 
 export type UserRouter = typeof userRouter;

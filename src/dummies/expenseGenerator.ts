@@ -1,5 +1,5 @@
 import { faker } from '@faker-js/faker';
-import type { SplitType } from '@prisma/client';
+import type { SplitType } from '~/server/db/types';
 import { addDays } from 'date-fns';
 import type { CategoryItem } from '~/lib/category';
 import { generateExpenseName } from './expenseNameGenerator';

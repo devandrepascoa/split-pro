@@ -1,4 +1,4 @@
-import { type User } from '@prisma/client';
+import { type User } from '~/server/db/types';
 import { clsx } from 'clsx';
 
 import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';

@@ -1,4 +1,4 @@
-import { type Expense, type ExpenseParticipant, SplitType } from '@prisma/client';
+import { type Expense, type ExpenseParticipant, SplitType } from '~/server/db/types';
 import { format } from 'date-fns';
 import { Download } from 'lucide-react';
 import React from 'react';

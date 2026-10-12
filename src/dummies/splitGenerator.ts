@@ -1,5 +1,5 @@
 import { faker } from '@faker-js/faker';
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 import { type SplitShares, initSplitShares } from '~/store/addStore';
 
 /**
@@ -43,7 +43,7 @@ const generatePercentageShares = (participants: ParticipantId[]): SplitShares =>
 
   if (participants.length === 1) {
     return {
-      [participants[0]!.id]: {
+      [participants[0].id]: {
         ...initSplitShares(),
         [SplitType.PERCENTAGE]: 10000n,
       },
@@ -59,12 +59,12 @@ const generatePercentageShares = (participants: ParticipantId[]): SplitShares =>
   // Convert percentages to the format used (0-10000)
   const shares: SplitShares = {};
   percentages.forEach((percentage, index) => {
-    shares[participants[index]!.id] = {
+    shares[participants[index].id] = {
       ...initSplitShares(),
       [SplitType.PERCENTAGE]: BigInt(percentage * 100),
     };
   });
-  shares[participants[participants.length - 1]!.id] = {
+  shares[participants[participants.length - 1].id] = {
     ...initSplitShares(),
     [SplitType.PERCENTAGE]: BigInt(lastParticipantPercentage * 100),
   };

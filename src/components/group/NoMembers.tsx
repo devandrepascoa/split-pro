@@ -1,4 +1,4 @@
-import { type Group, type GroupUser } from '@prisma/client';
+import { type Group, type GroupUser } from '~/server/db/types';
 import { Share, UserPlus } from 'lucide-react';
 import React, { useState } from 'react';
 import { useTranslation } from 'next-i18next';

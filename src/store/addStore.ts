@@ -1,4 +1,4 @@
-import { type Group, SplitType, type User } from '@prisma/client';
+import { type Group, SplitType, type User } from '~/server/db/types';
 import Router from 'next/router';
 import { create } from 'zustand';
 

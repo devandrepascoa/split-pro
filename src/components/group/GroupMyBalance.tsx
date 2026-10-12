@@ -1,4 +1,4 @@
-import { type BalanceView, type User } from '@prisma/client';
+import { type BalanceView, type User } from '~/server/db/types';
 import React, { useMemo } from 'react';
 
 import { CumulatedBalances } from '~/components/Expense/CumulatedBalances';
@@ -22,19 +22,19 @@ const GroupMyBalance: React.FC<GroupMyBalanceProps> = ({
 
   const userMap = useMemo(
     () =>
-      users.reduce(
+      users.reduce< Record<number, User>>(
         (acc, user) => {
           acc[user.id] = user;
           return acc;
         },
-        {} as Record<number, User>,
+        {},
       ),
     [users],
   );
 
   const friendBalances = useMemo(
     () =>
-      groupBalances.reduce(
+      groupBalances.reduce< Record<number, Record<string, bigint>>>(
         (acc, balance) => {
           if (balance.userId === userId && 0 < BigMath.abs(balance.amount)) {
             acc[balance.friendId] ??= {};
@@ -44,7 +44,7 @@ const GroupMyBalance: React.FC<GroupMyBalanceProps> = ({
           }
           return acc;
         },
-        {} as Record<number, Record<string, bigint>>,
+        {},
       ),
     [groupBalances, userId],
   );
@@ -52,7 +52,7 @@ const GroupMyBalance: React.FC<GroupMyBalanceProps> = ({
   const cumulatedBalances = useMemo(
     () =>
       Object.entries(
-        Object.values(friendBalances).reduce(
+        Object.values(friendBalances).reduce< Record<string, bigint>>(
           (acc, balances) => {
             if (balances) {
               Object.entries(balances).forEach(([currency, amount]) => {
@@ -61,7 +61,7 @@ const GroupMyBalance: React.FC<GroupMyBalanceProps> = ({
             }
             return acc;
           },
-          {} as Record<string, bigint>,
+          {},
         ),
       ).map(([currency, amount]) => ({ currency, amount })),
     [friendBalances],

@@ -1,4 +1,4 @@
-import { SplitType } from '@prisma/client';
+import { SplitType } from '~/server/db/types';
 import { ChevronLeftIcon, PencilIcon } from 'lucide-react';
 import { type GetServerSideProps } from 'next';
 import { useTranslation } from 'next-i18next';

@@ -29,7 +29,7 @@ export const DebugInfo: React.FC<React.PropsWithChildren> = ({ children }) => {
         const response = await fetch(
           'https://api.github.com/repos/oss-apps/split-pro/releases/latest',
         );
-        const data = await response.json();
+        const data = (await response.json()) as { tag_name?: string };
         if (data.tag_name) {
           setNewVersion(data.tag_name);
         }

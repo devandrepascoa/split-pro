@@ -1,4 +1,4 @@
-import BoringAvatar from 'boring-avatars';
+import BoringAvatar from '~/lib/boring-avatar';
 import { Avatar as AvatarPrimitive } from 'radix-ui';
 import * as React from 'react';
 

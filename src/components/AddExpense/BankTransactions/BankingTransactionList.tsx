@@ -41,7 +41,7 @@ export const BankingTransactionList: React.FC<{
 
   const userQuery = api.user.me.useQuery();
   const transactions = api.bankTransactions.getTransactions.useQuery(
-    userQuery.data?.obapiProviderId,
+    userQuery.data?.obapiProviderId ?? undefined,
     {
       enabled: bankConnectionEnabled && !!userQuery.data?.obapiProviderId,
     },
@@ -113,7 +113,7 @@ export const BankingTransactionList: React.FC<{
         setMultipleTransactions(
           isInMultipleTransactions
             ? multipleTransactions.filter((cItem) => cItem.transactionId !== item.transactionId)
-            : [...multipleTransactions, transactionData as TransactionAddInputModel],
+            : [...multipleTransactions, transactionData],
         );
       } else {
         if (alreadyAdded(item.transactionId)) {

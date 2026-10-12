@@ -1,4 +1,4 @@
-import { SplitType, type User } from '@prisma/client';
+import { SplitType, type User } from '~/server/db/types';
 import { isToday } from 'date-fns';
 import { type TFunction } from 'next-i18next';
 import { type CurrencyCode } from '~/lib/currency';

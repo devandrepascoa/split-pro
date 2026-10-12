@@ -1,6 +1,6 @@
 import { CheckIcon } from '@heroicons/react/24/outline';
 import { UserPlusIcon } from '@heroicons/react/24/solid';
-import type { Group, GroupUser, SplitType, User } from '@prisma/client';
+import type { Group, GroupUser, SplitType, User } from '~/server/db/types';
 import { SendIcon } from 'lucide-react';
 import { useTranslation } from 'next-i18next';
 import Image from 'next/image';
@@ -62,7 +62,7 @@ export const SelectUserOrGroup: React.FC<{
           id: -1,
           name: nameOrEmail,
           email: nameOrEmail,
-          emailVerified: new Date(),
+          emailVerified: true,
           image: null,
           currency: 'USD',
           defaultCurrency: null,

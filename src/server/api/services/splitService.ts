@@ -1,355 +1,338 @@
-import { SplitType, type User } from '@prisma/client';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import type { BatchItem } from 'drizzle-orm/batch';
 import { nanoid } from 'nanoid';
 
-import { db } from '~/server/db';
+import { bindings, db } from '~/server/db';
+import { chunk, runBatch } from '~/server/db/batch';
+import {
+  SplitType,
+  type User,
+  balanceView,
+  expenseParticipants,
+  expenseRecurrences,
+  expenses,
+  groupUsers,
+  groups,
+  jobs,
+  users,
+} from '~/server/db/schema';
 import { type SplitwiseGroup, type SplitwiseUser } from '~/types';
 
 import type { CreateExpense } from '~/types/expense.types';
 import { sendExpensePushNotification } from './notificationService';
-import { createRecurringExpenseJob } from './scheduleService';
+import {
+  deleteJob,
+  jobIdSubquery,
+  nextRunAt,
+  recurringJobCommand,
+  recurringJobName,
+  updateJobSchedule,
+} from './scheduleService';
+import { runInBackground } from '~/server/observability/background';
 import { getCurrencyHelpers } from '~/utils/numbers';
 import { isCurrencyCode } from '~/lib/currency';
 import { DEFAULT_CATEGORY } from '~/lib/category';
 import { extractTemplateExpenseId } from '~/lib/cron';
 
+interface Participant {
+  userId: number;
+  amount: bigint;
+}
+
+/** 3 bound parameters per participant row; D1 allows 100 per statement. */
+const PARTICIPANT_CHUNK = 33;
+
+const insertParticipants = (
+  expenseId: string,
+  participants: Participant[],
+): BatchItem<'sqlite'>[] =>
+  chunk(participants, PARTICIPANT_CHUNK).map((rows) =>
+    db
+      .insert(expenseParticipants)
+      .values(rows.map((p) => ({ expenseId, userId: p.userId, amount: p.amount }))),
+  );
+
+/** Columns of an expense that a create/edit request may set. */
+const expenseColumns = (e: CreateExpense) => ({
+  groupId: e.groupId,
+  paidBy: e.paidBy,
+  name: e.name,
+  category: e.category,
+  amount: e.amount,
+  splitType: e.splitType,
+  currency: e.currency,
+});
+
 export async function joinGroup(userId: number, publicGroupId: string) {
-  const group = await db.group.findUnique({
-    where: {
-      publicId: publicGroupId,
-    },
-  });
+  const group = await db.query.groups.findFirst({ where: eq(groups.publicId, publicGroupId) });
 
   if (!group) {
     throw new Error('Group not found');
   }
 
-  await db.groupUser.create({
-    data: {
-      groupId: group.id,
-      userId,
-    },
-  });
+  await db.insert(groupUsers).values({ groupId: group.id, userId });
 
   return group;
 }
 
 export async function createExpense(
-  {
-    groupId,
-    paidBy,
-    name,
-    category,
-    amount,
-    splitType,
-    currency,
-    participants,
-    expenseDate,
-    fileKey,
-    transactionId,
-    cronExpression,
-  }: CreateExpense & { cronExpression?: string },
+  input: CreateExpense & { cronExpression?: string },
   currentUserId: number,
   conversionFromParams?: CreateExpense,
 ) {
-  const nonZeroParticipants = getNonZeroParticipants(participants);
+  const { participants, expenseDate, fileKey, transactionId, cronExpression } = input;
+  const expenseId = crypto.randomUUID();
+  const now = new Date();
+  const items: BatchItem<'sqlite'>[] = [];
 
-  const conversionFrom = conversionFromParams
-    ? {
-        create: {
-          ...conversionFromParams,
-          addedBy: currentUserId,
-          expenseParticipants: {
-            create: getNonZeroParticipants(conversionFromParams.participants),
-          },
-        },
-      }
-    : undefined;
-  if (conversionFrom) {
-    // @ts-ignore
-    delete conversionFrom.create.participants;
-  }
-
-  // Pre-generate UUID and create cron job if recurring (before transaction)
-  let expenseId: string | undefined = undefined;
-  let jobId: bigint | undefined = undefined;
-
+  // Recurrence: job -> ExpenseRecurrence -> Expense.recurrenceId, all resolved inside the batch.
+  let recurrenceIdSql: ReturnType<typeof sql> | null = null;
   if (cronExpression) {
-    const [{ gen_random_uuid }] = await db.$queryRaw<[{ gen_random_uuid: string }]>`
-      SELECT gen_random_uuid()::text as gen_random_uuid
-    `;
-    expenseId = gen_random_uuid;
-
-    const [{ schedule }] = await createRecurringExpenseJob(expenseId, cronExpression);
-    jobId = schedule;
+    const jobname = recurringJobName(expenseId);
+    items.push(
+      db.insert(jobs).values({
+        schedule: cronExpression,
+        command: recurringJobCommand(expenseId),
+        jobname,
+        nextRunAt: nextRunAt(cronExpression, now),
+      }),
+      db.insert(expenseRecurrences).values({ jobId: jobIdSubquery(jobname) }),
+    );
+    recurrenceIdSql = sql`(SELECT ${expenseRecurrences.id} FROM ${expenseRecurrences} WHERE ${expenseRecurrences.jobId} = ${jobIdSubquery(jobname)})`;
   }
 
-  const operations = [];
-
-  // Create expense operation
-  operations.push(
-    db.expense.create({
-      data: {
-        ...(expenseId && { id: expenseId }),
-        groupId,
-        paidBy,
-        name,
-        category,
-        amount,
-        splitType,
-        currency,
-        expenseParticipants: {
-          create: nonZeroParticipants,
-        },
+  const expenseIndex = items.length;
+  items.push(
+    db
+      .insert(expenses)
+      .values({
+        id: expenseId,
+        ...expenseColumns(input),
         fileKey,
         addedBy: currentUserId,
-        expenseDate,
+        expenseDate: expenseDate ?? now,
         transactionId,
-        conversionFrom,
-      },
-    }),
+        recurrenceId: recurrenceIdSql,
+      })
+      .returning(),
   );
+  items.push(...insertParticipants(expenseId, getNonZeroParticipants(participants)));
 
-  // Link recurrence to expense if we created a cron job
-  if (expenseId && jobId) {
-    operations.push(
-      db.expenseRecurrence.create({
-        data: {
-          expense: {
-            connect: { id: expenseId },
-          },
-          job: {
-            connect: { jobid: jobId },
-          },
-        },
+  // Currency conversion: the "from" expense points at this one via conversionToId.
+  if (conversionFromParams) {
+    const fromId = crypto.randomUUID();
+    items.push(
+      db.insert(expenses).values({
+        id: fromId,
+        ...expenseColumns(conversionFromParams),
+        addedBy: currentUserId,
+        expenseDate: conversionFromParams.expenseDate ?? now,
+        conversionToId: expenseId,
       }),
+      ...insertParticipants(fromId, getNonZeroParticipants(conversionFromParams.participants)),
     );
   }
 
-  try {
-    const results = await db.$transaction(operations);
-    const createdExpense = results[0] as Awaited<ReturnType<typeof db.expense.create>>;
-    if (!createdExpense) {
-      throw new Error('Expense creation failed');
-    }
-
-    sendExpensePushNotification(createdExpense.id).catch(console.error);
-    return createdExpense;
-  } catch (error) {
-    // If we created a cron job but transaction failed, clean up the cron job
-    if (expenseId) {
-      await db.$executeRaw`SELECT cron.unschedule(${`expense_recurring_${expenseId}`})`;
-    }
-    throw error;
+  const results = await runBatch(items);
+  const [createdExpense] = results[expenseIndex] as (typeof expenses.$inferSelect)[];
+  if (!createdExpense) {
+    throw new Error('Expense creation failed');
   }
+
+  runInBackground('push:create', sendExpensePushNotification(createdExpense.id));
+  return createdExpense;
 }
 
-export async function deleteExpense(expenseId: string, deletedBy: number) {
-  const expense = await db.expense.findUnique({
-    where: {
-      id: expenseId,
-    },
-    include: {
-      recurrence: {
-        include: {
-          job: true,
-        },
-      },
-    },
+const getExpenseWithJob = (expenseId: string) =>
+  db.query.expenses.findFirst({
+    where: eq(expenses.id, expenseId),
+    with: { recurrence: { with: { job: true } } },
   });
 
-  const operations = [];
+export async function deleteExpense(expenseId: string, deletedBy: number) {
+  const items: BatchItem<'sqlite'>[] = [];
+  const touched: string[] = [];
 
-  if (!expense) {
-    throw new Error('Expense not found');
-  }
-
-  if (expense.conversionToId) {
-    await deleteExpense(expense.conversionToId, deletedBy);
-  }
-
-  operations.push(
-    db.expense.update({
-      where: { id: expenseId },
-      data: {
-        deletedBy,
-        deletedAt: new Date(),
-      },
-    }),
-  );
-
-  if (expense.recurrence?.job) {
-    const templateId = extractTemplateExpenseId(expense.recurrence.job.command);
-    const isTemplate = templateId === expense.id;
-
-    if (isTemplate) {
-      // Template deletion stops the recurrence
-      operations.push(db.$executeRaw`SELECT cron.unschedule(${expense.recurrence.job.jobname})`);
-      operations.push(
-        db.expenseRecurrence.delete({
-          where: { id: expense.recurrence.id },
-        }),
-      );
+  // Collect the expense and its conversion chain, then soft-delete all of them atomically.
+  let currentId: string | null = expenseId;
+  while (currentId) {
+    const expense = await getExpenseWithJob(currentId);
+    if (!expense) {
+      throw new Error('Expense not found');
     }
-    // Derived expense deletion: just soft-delete, recurrence continues
+    touched.push(expense.id);
+
+    items.push(
+      db
+        .update(expenses)
+        .set({ deletedBy, deletedAt: new Date() })
+        .where(eq(expenses.id, expense.id)),
+    );
+
+    const job = expense.recurrence?.job;
+    // Template deletion stops the recurrence; deleting a derived expense keeps it running.
+    if (job && extractTemplateExpenseId(job.command) === expense.id) {
+      items.push(deleteJob(job.jobid));
+    }
+
+    currentId = expense.conversionToId;
   }
 
-  await db.$transaction(operations);
-  sendExpensePushNotification(expenseId).catch(console.error);
+  await runBatch(items);
+  runInBackground('push:expense', sendExpensePushNotification(expenseId));
 }
 
 export async function editExpense(
-  {
-    expenseId,
-    paidBy,
-    name,
-    category,
-    amount,
-    splitType,
-    currency,
-    participants,
-    expenseDate,
-    fileKey,
-    transactionId,
-    cronExpression,
-  }: CreateExpense & { cronExpression?: string },
+  input: CreateExpense & { cronExpression?: string },
   currentUserId: number,
   conversionToParams?: CreateExpense,
 ) {
+  const { expenseId, participants, expenseDate, fileKey, transactionId, cronExpression } = input;
   if (!expenseId) {
     throw new Error('Expense ID is required for editing');
   }
 
-  const expense = await db.expense.findUnique({
-    where: { id: expenseId },
-    include: {
-      expenseParticipants: true,
-      recurrence: {
-        include: {
-          job: true,
-        },
-      },
-    },
-  });
-
+  const expense = await getExpenseWithJob(expenseId);
   if (!expense) {
     throw new Error('Expense not found');
   }
 
-  // Determine if this is a template or derived expense
-  const templateId = expense.recurrence?.job?.command
-    ? extractTemplateExpenseId(expense.recurrence.job.command)
-    : null;
-  const isTemplate = templateId === expenseId;
+  const job = expense.recurrence?.job;
+  const isTemplate = job ? extractTemplateExpenseId(job.command) === expenseId : false;
 
-  const operations = [];
+  if (conversionToParams && !expense.conversionToId) {
+    throw new Error('Conversion to expense not found for editing');
+  }
 
-  // Delete existing participants
-  operations.push(
-    db.expenseParticipant.deleteMany({
-      where: {
-        expenseId: expense.conversionToId ? { in: [expenseId, expense.conversionToId] } : expenseId,
-      },
-    }),
-  );
+  const affectedIds = expense.conversionToId ? [expenseId, expense.conversionToId] : [expenseId];
 
-  // Update expense with new details and create new participants
-  operations.push(
-    db.expense.update({
-      where: { id: expenseId },
-      data: {
-        paidBy,
-        name,
-        category,
-        amount,
-        splitType,
-        currency,
-        expenseParticipants: {
-          create: participants,
-        },
+  const items: BatchItem<'sqlite'>[] = [
+    db.delete(expenseParticipants).where(inArray(expenseParticipants.expenseId, affectedIds)),
+    db
+      .update(expenses)
+      .set({
+        ...expenseColumns(input),
         fileKey,
         transactionId,
-        expenseDate,
+        ...(expenseDate && { expenseDate }),
         updatedBy: currentUserId,
-      },
-    }),
-  );
-  if (conversionToParams) {
-    if (!expense.conversionToId) {
-      throw new Error('Conversion to expense not found for editing');
-    }
-    const { participants: toParticipants, ...toExpenseData } = conversionToParams;
+      })
+      .where(eq(expenses.id, expenseId)),
+    ...insertParticipants(expenseId, participants),
+  ];
 
-    operations.push(
-      db.expense.update({
-        where: { id: expense.conversionToId },
-        data: {
-          ...toExpenseData,
-          expenseParticipants: {
-            create: toParticipants,
-          },
+  if (conversionToParams && expense.conversionToId) {
+    items.push(
+      db
+        .update(expenses)
+        .set({
+          ...expenseColumns(conversionToParams),
+          ...(conversionToParams.expenseDate && { expenseDate: conversionToParams.expenseDate }),
           updatedBy: currentUserId,
-        },
-      }),
+        })
+        .where(eq(expenses.id, expense.conversionToId)),
+      ...insertParticipants(expense.conversionToId, conversionToParams.participants),
     );
   }
 
-  // Handle recurrence changes only for template expenses
-  if (isTemplate && expense.recurrence?.job) {
-    const currentSchedule = expense.recurrence.job.schedule;
-
-    if (cronExpression && cronExpression !== currentSchedule) {
-      // Schedule changed - update the cron job
-      operations.push(
-        db.$executeRaw`SELECT cron.alter_job(${expense.recurrence.job.jobid}, schedule := ${cronExpression})`,
-      );
+  // Recurrence changes apply only to the template expense.
+  if (isTemplate && job) {
+    if (cronExpression && cronExpression !== job.schedule) {
+      items.push(updateJobSchedule(job.jobid, cronExpression));
     } else if (!cronExpression) {
-      // Recurrence removed - unschedule and delete recurrence record
-      operations.push(db.$executeRaw`SELECT cron.unschedule(${expense.recurrence.job.jobname})`);
-      operations.push(
-        db.expenseRecurrence.delete({
-          where: { id: expense.recurrence.id },
-        }),
-      );
+      items.push(deleteJob(job.jobid));
     }
-    // If cronExpression === currentSchedule, no action needed
   }
-  // For derived expenses, cronExpression is ignored entirely
 
-  await db.$transaction(operations);
-  sendExpensePushNotification(expenseId).catch(console.error);
-  return { id: expenseId }; // Return the updated expense
+  await runBatch(items);
+  runInBackground('push:expense', sendExpensePushNotification(expenseId));
+  return { id: expenseId };
 }
 
+/**
+ * Executes one recurring-expense job: copies the template expense and its participants.
+ *
+ * Idempotent per run slot: the copy's id is derived from (jobid, scheduled time), and the
+ * inserts use INSERT OR IGNORE, so a retried Workflow step cannot create duplicates.
+ */
+export async function runRecurringJob(jobid: number, now: Date = new Date()) {
+  const job = await db.query.jobs.findFirst({ where: eq(jobs.jobid, jobid) });
+  if (!job?.active || !job.nextRunAt || job.nextRunAt > now) {
+    return { skipped: true };
+  }
+
+  const templateId = extractTemplateExpenseId(job.command);
+  const slot = job.nextRunAt;
+  const newId = await deterministicUuid(`${jobid}:${slot.getTime()}`);
+  const ts = now.getTime();
+
+  // Drizzle's `db.run()` cannot be part of a D1 batch, so the whole batch is built from prepared
+  // D1 statements. Drizzle builders contribute their SQL via `toSQL()`.
+  const prepare = (statement: { sql: string; params: unknown[] }) =>
+    bindings.DB.prepare(statement.sql).bind(...statement.params);
+
+  await bindings.DB.batch([
+    bindings.DB.prepare(
+      `INSERT OR IGNORE INTO "Expense" (
+        "id", "paidBy", "addedBy", "name", "category", "amount", "splitType", "expenseDate",
+        "createdAt", "updatedAt", "currency", "groupId", "updatedBy", "recurrenceId"
+      )
+      SELECT ?, "paidBy", "addedBy", "name", "category", "amount", "splitType", ?,
+        ?, ?, "currency", "groupId", "updatedBy", "recurrenceId"
+      FROM "Expense" WHERE "id" = ?`,
+    ).bind(newId, ts, ts, ts, templateId),
+    bindings.DB.prepare(
+      `INSERT OR IGNORE INTO "ExpenseParticipant" ("expenseId", "userId", "amount")
+      SELECT ?, "userId", "amount" FROM "ExpenseParticipant"
+      WHERE "expenseId" = ?
+        AND EXISTS (SELECT 1 FROM "Expense" WHERE "id" = ?)`,
+    ).bind(newId, templateId, newId),
+    prepare(
+      db
+        .update(expenseRecurrences)
+        .set({ notified: false })
+        .where(eq(expenseRecurrences.jobId, jobid))
+        .toSQL(),
+    ),
+    prepare(
+      db
+        .update(jobs)
+        .set({ lastRunAt: now, nextRunAt: nextRunAt(job.schedule, now) })
+        .where(eq(jobs.jobid, jobid))
+        .toSQL(),
+    ),
+  ]);
+
+  return { skipped: false, expenseId: newId };
+}
+
+const deterministicUuid = async (seed: string) => {
+  const hash = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(seed)),
+  );
+  const b = hash.slice(0, 16);
+  b[6] = (b[6]! & 0x0f) | 0x50; // Version 5-style
+  b[8] = (b[8]! & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
 export async function getCompleteFriendsDetails(userId: number) {
-  const viewBalances = await db.balanceView.findMany({
-    where: {
-      userId,
-    },
-    include: {
-      friend: true,
-    },
-  });
+  const viewBalances = await db
+    .select({
+      balance: {
+        friendId: balanceView.friendId,
+        currency: balanceView.currency,
+        amount: balanceView.amount,
+      },
+      friend: { email: users.email, name: users.name },
+    })
+    .from(balanceView)
+    .innerJoin(users, eq(users.id, balanceView.friendId))
+    .where(eq(balanceView.userId, userId));
 
-  const friends = viewBalances.reduce(
-    (acc, balance) => {
-      const { friendId } = balance;
-      acc[friendId] ??= {
-        balances: [],
-        id: friendId,
-        email: balance.friend.email,
-        name: balance.friend.name,
-      };
-
-      if (0n !== balance.amount) {
-        acc[friendId]?.balances.push({
-          currency: balance.currency,
-          amount: balance.amount,
-        });
-      }
-
-      return acc;
-    },
-    {} as Record<
+  const friends = viewBalances.reduce<
+    Record<
       number,
       {
         id: number;
@@ -357,48 +340,76 @@ export async function getCompleteFriendsDetails(userId: number) {
         name?: string | null;
         balances: { currency: string; amount: bigint }[];
       }
-    >,
-  );
+    >
+  >((acc, { balance, friend }) => {
+    const { friendId } = balance;
+    acc[friendId] ??= {
+      balances: [],
+      id: friendId,
+      email: friend.email,
+      name: friend.name,
+    };
+
+    if (0n !== balance.amount) {
+      acc[friendId]?.balances.push({
+        currency: balance.currency,
+        amount: balance.amount,
+      });
+    }
+
+    return acc;
+  }, {});
 
   return friends;
 }
 
 export async function getCompleteGroupDetails(userId: number) {
-  const groups = await db.group.findMany({
-    where: {
-      groupUsers: {
-        some: {
-          userId,
-        },
-      },
-    },
-    include: {
-      groupUsers: true,
-      groupBalances: true,
-    },
+  const userGroups = await db.query.groups.findMany({
+    where: inArray(
+      groups.id,
+      db
+        .select({ groupId: groupUsers.groupId })
+        .from(groupUsers)
+        .where(eq(groupUsers.userId, userId)),
+    ),
+    with: { groupUsers: true },
   });
 
-  return groups;
+  if (0 === userGroups.length) {
+    return [];
+  }
+
+  const balances = await db
+    .select()
+    .from(balanceView)
+    .where(
+      inArray(
+        balanceView.groupId,
+        userGroups.map((g) => g.id),
+      ),
+    );
+
+  return userGroups.map((g) => ({
+    ...g,
+    groupBalances: balances.filter((b) => b.groupId === g.id),
+  }));
 }
 
 export async function importUserBalanceFromSplitWise(
   currentUserId: number,
   splitWiseUsers: SplitwiseUser[],
 ) {
-  const operations = [];
+  const items: BatchItem<'sqlite'>[] = [];
 
-  const users = await createUsersFromSplitwise(splitWiseUsers);
+  const importedUsers = await createUsersFromSplitwise(splitWiseUsers);
 
-  const userMap = users.reduce(
-    (acc, user) => {
-      if (user.email) {
-        acc[user.email] = user;
-      }
+  const userMap = importedUsers.reduce<Record<string, User>>((acc, user) => {
+    if (user.email) {
+      acc[user.email] = user;
+    }
 
-      return acc;
-    },
-    {} as Record<string, User>,
-  );
+    return acc;
+  }, {});
 
   const currencyHelperCache: Record<string, ReturnType<typeof getCurrencyHelpers>['toSafeBigInt']> =
     {};
@@ -413,80 +424,69 @@ export async function importUserBalanceFromSplitWise(
     for (const balance of user.balance) {
       const currency = balance.currency_code;
 
-      if (!currencyHelperCache[currency]) {
-        currencyHelperCache[currency] = getCurrencyHelpers({
-          currency: isCurrencyCode(currency) ? currency : 'USD',
-        }).toSafeBigInt;
-      }
+      currencyHelperCache[currency] ??= getCurrencyHelpers({
+        currency: isCurrencyCode(currency) ? currency : 'USD',
+      }).toSafeBigInt;
 
       const amount = currencyHelperCache[currency](balance.amount);
+      const id = crypto.randomUUID();
 
-      operations.push(
-        db.expense.create({
-          data: {
-            name: 'Splitwise Balance Import',
-            amount,
-            currency,
-            paidBy: currentUserId,
-            splitType: SplitType.EQUAL,
-            expenseParticipants: {
-              create: [
-                {
-                  userId: currentUserId,
-                  amount: amount,
-                },
-                {
-                  userId: dbUser.id,
-                  amount: -amount,
-                },
-              ],
-            },
-            addedBy: currentUserId,
-            category: DEFAULT_CATEGORY,
-          },
+      items.push(
+        db.insert(expenses).values({
+          id,
+          name: 'Splitwise Balance Import',
+          amount,
+          currency,
+          paidBy: currentUserId,
+          splitType: SplitType.EQUAL,
+          addedBy: currentUserId,
+          category: DEFAULT_CATEGORY,
         }),
+        ...insertParticipants(id, [
+          { userId: currentUserId, amount },
+          { userId: dbUser.id, amount: -amount },
+        ]),
       );
     }
   }
 
-  await db.$transaction(operations);
+  await runBatch(items);
 }
 
-async function createUsersFromSplitwise(users: SplitwiseUser[]) {
-  const userEmails = users.map((u) => u.email);
-
-  const existingUsers = await db.user.findMany({
-    where: {
-      email: {
-        in: userEmails,
-      },
-    },
-  });
-
-  const existingUserMap: Record<string, boolean> = {};
-
-  for (const user of existingUsers) {
-    if (user.email) {
-      existingUserMap[user.email] = true;
-    }
+async function createUsersFromSplitwise(splitwiseUsers: SplitwiseUser[]) {
+  const userEmails = splitwiseUsers.map((u) => u.email);
+  if (0 === userEmails.length) {
+    return [];
   }
 
-  const newUsers = users.filter((u) => !existingUserMap[u.email]);
+  const findExisting = async () =>
+    (
+      await Promise.all(
+        chunk(userEmails, 90).map((emails) =>
+          db.select().from(users).where(inArray(users.email, emails)),
+        ),
+      )
+    ).flat();
 
-  await db.user.createMany({
-    data: newUsers.map((u) => ({
-      email: u.email,
-      name: `${u.first_name}${u.last_name ? ` ${u.last_name}` : ''}`,
-    })),
-  });
+  const existingEmails = new Set((await findExisting()).map((u) => u.email));
+  const newUsers = splitwiseUsers.filter((u) => !existingEmails.has(u.email));
 
-  return db.user.findMany({
-    where: {
-      email: {
-        in: userEmails,
-      },
-    },
-  });
+  // 2 bound parameters per row.
+  await runBatch(
+    chunk(newUsers, 45).map((rows) =>
+      db
+        .insert(users)
+        .values(
+          rows.map((u) => ({
+            email: u.email,
+            name: `${u.first_name}${u.last_name ? ` ${u.last_name}` : ''}`,
+          })),
+        )
+        .onConflictDoNothing(),
+    ),
+  );
+
+  return findExisting();
 }
 
 export async function importGroupFromSplitwise(
@@ -501,76 +501,56 @@ export async function importGroupFromSplitwise(
     }
   }
 
-  const users = await createUsersFromSplitwise(Object.values(splitwiseUserMap));
+  const importedUsers = await createUsersFromSplitwise(Object.values(splitwiseUserMap));
 
-  const userMap = users.reduce(
-    (acc, user) => {
-      if (user.email) {
-        acc[user.email] = user;
-      }
+  const userMap = importedUsers.reduce<Record<string, User>>((acc, user) => {
+    if (user.email) {
+      acc[user.email] = user;
+    }
 
-      return acc;
-    },
-    {} as Record<string, User>,
-  );
+    return acc;
+  }, {});
 
   const missingGroups = await Promise.all(
     splitWiseGroups.map(async (group) => {
-      const dbGroup = await db.group.findUnique({
-        where: {
-          splitwiseGroupId: group.id.toString(),
-        },
+      const dbGroup = await db.query.groups.findFirst({
+        where: eq(groups.splitwiseGroupId, group.id.toString()),
       });
 
       return dbGroup ? null : group;
     }),
   );
 
-  const operations = missingGroups
-    .filter((g) => null !== g)
-    .map((group) => {
-      const groupmembers = group.members.map((member) => ({
-        userId: userMap[member.email.toString()]!.id,
-      }));
+  const items: BatchItem<'sqlite'>[] = [];
+  for (const group of missingGroups) {
+    if (!group) {
+      // oxlint-disable-next-line no-continue
+      continue;
+    }
+    const splitwiseGroupId = group.id.toString();
+    const groupIdSql = sql`(SELECT ${groups.id} FROM ${groups} WHERE ${groups.splitwiseGroupId} = ${splitwiseGroupId})`;
 
-      return db.group.create({
-        data: {
-          name: group.name,
-          splitwiseGroupId: group.id.toString(),
-          publicId: nanoid(),
-          userId: currentUserId,
-          groupUsers: {
-            create: groupmembers,
-          },
-        },
-      });
-    });
+    items.push(
+      db.insert(groups).values({
+        name: group.name,
+        splitwiseGroupId,
+        publicId: nanoid(),
+        userId: currentUserId,
+      }),
+      // 2 bound parameters per row, plus the subquery parameter.
+      ...chunk(group.members, 45).map((members) =>
+        db.insert(groupUsers).values(
+          members.map((member) => ({
+            groupId: groupIdSql,
+            userId: userMap[member.email.toString()]!.id,
+          })),
+        ),
+      ),
+    );
+  }
 
-  await db.$transaction(operations);
+  await runBatch(items);
 }
 
-const getNonZeroParticipants = (participants: { userId: number; amount: bigint }[]) =>
+const getNonZeroParticipants = (participants: Participant[]) =>
   participants.length > 1 ? participants.filter((p) => 0n !== p.amount) : participants;
-
-interface HistoricalBalance {
-  userId: number;
-  friendId: number;
-  groupId: number | null;
-  currency: string;
-  amount: bigint;
-}
-
-export const getHistoricalBalances = async (
-  userId: number,
-  friendId: number,
-  currency: string,
-  beforeDate: Date,
-) =>
-  db.$queryRaw<HistoricalBalance[]>`
-        SELECT "userId", "friendId", "groupId", currency, amount
-        FROM get_balance_at_date(${beforeDate})
-        WHERE "userId" = ${userId} 
-          AND "friendId" = ${friendId} 
-          AND currency = ${currency}
-          AND amount != 0
-      `;

@@ -14,11 +14,11 @@ import { type AppRouter } from '~/server/api/root';
 export const getBaseUrl = () => {
   if ('undefined' !== typeof window) {
     return '';
-  } // browser should use relative url
+  } // Browser should use relative url
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`;
   } // SSR should use vercel url
-  return `http://localhost:${process.env.PORT ?? 3000}`; // dev SSR should use localhost
+  return process.env.NEXTAUTH_URL ?? 'http://localhost:5173';
 };
 
 /** A set of type-safe react-query hooks for your tRPC API. */

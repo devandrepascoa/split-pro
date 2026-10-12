@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import Avatar from 'boring-avatars';
+import Avatar from '~/lib/boring-avatar';
 import { useRouter } from 'next/router';
 import React, { useCallback, useState } from 'react';
 import { useForm } from 'react-hook-form';

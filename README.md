@@ -1,179 +1,104 @@
-<p align="center" style="margin-top: 12px">
-  <a href="https://splitpro.app">
-  <img width="100px"  style="border-radius: 50%;" src="https://splitpro.app/logo_circle.png" alt="SplitPro Logo">
-  </a>
+# SplitPro on Cloudflare Workers
+
+> [!WARNING]
+> **EXPERIMENTAL and VIBE-CODED.** This is an AI-assisted port of SplitPro to Cloudflare Workers.
+> It is a hobby project. It has **no automated tests**, it has not been security-reviewed, and parts
+> of it are untested (bank sync, Splitwise import, recurring expenses under load). It handles money
+> records. Use at your own risk, and do not trust it with anything important.
+
+This is a fork of **[oss-apps/split-pro](https://github.com/oss-apps/split-pro)**, the open source
+Splitwise alternative. All credit for the app, UI, and features goes to the original authors. For the
+original project, its documentation, and the supported Docker/Postgres setup, go to
+**https://github.com/oss-apps/split-pro** (website: https://splitpro.app).
+
+This fork is **not affiliated with or endorsed by** the upstream project. License: MIT (see `LICENSE`).
+
+## What is different from upstream
+
+Everything runs on Cloudflare Workers. There is no Node server, no Docker, and no Postgres.
+
+| Area                      | Upstream          | This fork                                                                                         |
+| ------------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
+| Runtime                   | Next.js on Node   | Next.js on Workers via [vinext](https://github.com/cloudflare/vinext) + `@cloudflare/vite-plugin` |
+| Database                  | Postgres + Prisma | Cloudflare D1 + Drizzle (money writes use atomic `db.batch`)                                      |
+| Auth                      | next-auth         | better-auth, Google sign-in only                                                                  |
+| Uploads                   | local disk        | R2                                                                                                |
+| Email                     | nodemailer / SMTP | Cloudflare Email Sending binding                                                                  |
+| Cron / recurring expenses | `pg_cron`         | A Workflow with a `* * * * *` schedule, driven by the `job` table                                 |
+| Push                      | `web-push`        | `web-push` on Workers (VAPID keys as secrets)                                                     |
+| Observability             | none              | Workers Logs, Traces, and Issues, unsampled; tRPC, Worker, and browser errors are logged          |
+
+The `Dockerfile`, `docker/`, `start.sh`, `flake.nix`, and most of `docs/` are leftovers from upstream.
+They describe the Postgres/Prisma setup, which this fork removed. They no longer work here.
+
+## Deploy
+
+You need a Cloudflare account on a plan that supports Workers, D1, R2, Workflows, and Email Sending,
+a domain on Cloudflare, and a Google OAuth client.
+
+1. Install: `pnpm install`
+2. Create resources:
+   ```sh
+   npx wrangler d1 create splitpro
+   npx wrangler r2 bucket create splitpro-uploads
+   ```
+3. Copy `wrangler.example.jsonc` to `wrangler.jsonc`. Set your domain, the D1 `database_id`, and the
+   sender address (`FROM_EMAIL`). Your domain must have Email Sending enabled.
+4. Create a Google OAuth client (Web application). Add the redirect URI
+   `https://YOUR_DOMAIN/api/auth/callback/google`.
+5. Apply the migrations: `npx wrangler d1 migrations apply splitpro --remote`
+6. Set the secrets (`npx wrangler secret put NAME`):
+   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXTAUTH_SECRET` (a random string; the name is kept
+   from upstream), and for push notifications `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY`,
+   `WEB_PUSH_EMAIL`. Generate VAPID keys with `npx web-push generate-vapid-keys`.
+7. Build and deploy:
+   ```sh
+   SKIP_ENV_VALIDATION=1 pnpm build && npx wrangler deploy
+   ```
+
+Local development: put the same values in `.dev.vars` (git-ignored, with `NEXTAUTH_URL=http://localhost:8787`),
+run `npx wrangler d1 migrations apply splitpro --local`, then `npx wrangler dev --port 8787`.
+
+## Cloudflare Worker Previews
+
+`wrangler.example.jsonc` includes a `previews` block with non-production settings and D1/R2 bindings.
+Run `npx wrangler preview --name <preview-name>` from the branch you want to preview; Wrangler
+defaults the name to the current Git branch. Set `NEXTAUTH_URL` in that branch's `previews.vars` to
+its actual Preview URL. Preview URLs are public unless protected by Cloudflare Access.
+
+The example D1 ID and Access audience are placeholders. Create a non-production D1 database and R2
+bucket, then set their IDs/names in the `previews` block. D1/R2 resources are shared whenever
+previews use the same ID/name. For per-branch isolation, create separate resources for each branch,
+update that branch's `previews` bindings and D1 migration target, and apply migrations to that D1
+before deploying its Preview. Do not point Preview bindings at production resources.
+
+When protecting a Preview with Cloudflare Access, set `PREVIEW_ACCESS_AUTH=true`, set
+`PREVIEW_ACCESS_AUD` to the Access application's audience tag, and ensure the Access policy covers
+the Preview hostname. The Worker verifies the Access identity and maps it to an app session; this
+setting belongs only in `previews.vars`, not production `vars`.
+
+## Known gaps
+
+- Test coverage is small and focused on the riskiest paths (see below). There are no unit or component tests.
+- Plaid / GoCardless bank sync and the Splitwise import are untested on Workers.
+- Only Google sign-in is wired up. There is no email or password login.
+- `drizzle-kit` and `wrangler d1 migrations` own the schema. `migrations/0001_balance_view_and_triggers.sql`
+  is hand-written (the `BalanceView` view and a trigger). Back it up before regenerating migrations.
+
+## Tests
+
+```sh
+pnpm test:integration   # Vitest in workerd with a real local D1 and the production migrations
+pnpm build && pnpm test:e2e   # Playwright against the built Worker (wrangler dev), 4 parallel workers
+```
+
+- `src/tests/integration`: authorization, balances and simplification, expense create/edit/delete
+  atomicity, settlements, recurring expenses (including idempotent retries), and regression tests
+  for D1 query bugs.
+- `tests/e2e`: sign-in redirect, signed-in session, groups, expenses, settle up, a stranger being
+  blocked, and recurring expenses, all against the production bundle. Google sign-in cannot be
+  automated, so the tests seed users and signed `better-auth` session cookies in a throwaway D1.
+- CI (`.github/workflows/ci.yml`) runs typecheck, integration, and e2e as three parallel jobs with
+  the pnpm store, Playwright browsers, and the build cached. The target is under 2 minutes.
 
-  <h1 align="center">SplitPro</h1>
-  <h2 align="center">An open source alternative to Splitwise</h2>
-
-## About
-
-SplitPro is a self-hosted, open source way to share expenses with friends. It is designed as a replacement for Splitwise.
-
-## Quick start
-
-1. Use Docker Compose from [docker/prod/compose.yml](docker/prod/compose.yml).
-2. Copy `.env.example` to `.env` and configure auth, database, and uploads.
-3. Start the stack and log in to create your first account.
-
-See [docker/README.md](docker/README.md) and [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full setup steps.
-
-## Core features
-
-- Add expenses with a friend or a group.
-- Split methods: equal, percentage, share, exact, adjustments, and settlements.
-- Categories, currencies, dates, and receipt attachments (stored locally).
-- Negative expenses are supported for refunds and corrections.
-- PWA support with push notifications.
-- Activity feed with edits and deletions.
-- Detailed balances per person and per group.
-
-## UI preview
-
-![SplitPro banner](public/og_banner.png)
-
-![Desktop balances view](public/Desktop.webp)
-
-![Mobile balances view](public/hero.webp)
-
-## Usage overview
-
-### 1) Expenses, balances, and activity
-
-Create expenses with categories, currencies, dates, and receipt attachments. SplitPro supports negative expenses for refunds and corrections. View per-person balances, detailed group balances, and an activity feed that includes edits and deletions.
-
-### 2) Application info
-
-SplitPro is a PWA and that is the recommended way to use the app. It supports push notifications for new expenses and updates, but push delivery requires additional configuration. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-### 3) Groups
-
-Groups are the primary way to use SplitPro. You can invite friends by email, or add them directly if they are already in your friends list. Group debt simplification is optional, and the group balance view provides a detailed breakdown.
-
-### 4) Data utilities
-
-Splitwise import supports friends and groups (partial import). Expenses themselves are not imported yet. You can export data from the balances view and account settings.
-
-### 5) Translations
-
-Translations are managed in Weblate. When a language reaches 100%, it is enabled in the next update.
-
-### 6) Authentication
-
-SplitPro uses NextAuth. At least one provider must be configured.
-
-- Email sign-in (magic link)
-- OAuth (Google)
-- OIDC (Authentik, Keycloak, or custom OIDC)
-
-Username/password login is not supported. You can lock down an instance by disabling signups and invites. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) for details.
-
-### 7) Currency conversions
-
-SplitPro can display balances in a single currency, convert expense amounts, and convert group balances. Provider availability and rate limits depend on the configured rate provider. See [docs/CURRENCY_CONVERSIONS.md](docs/CURRENCY_CONVERSIONS.md).
-
-### 8) Recurring transactions
-
-Recurring expenses require a PostgreSQL database with the `pg_cron` extension. We publish a prebuilt Postgres image with `pg_cron`; example usage is in [docker/prod/compose.yml](docker/prod/compose.yml). If you use another database, you must enable the extension and adjust configuration. A non-superuser database role is supported when `pg_cron` is preinstalled; see [docker/README.md](docker/README.md). See [docs/RECURRING_TRANSACTIONS.md](docs/RECURRING_TRANSACTIONS.md).
-
-### 9) Bank transaction integration
-
-Bank integration allows you to load transactions from providers like Plaid and convert them into expenses. This feature was provided by @alexanderwassbjer, who is currently maintaining related issues. See [docs/BANK_TRANSACTIONS.md](docs/BANK_TRANSACTIONS.md).
-
-## Limitations and notes
-
-- SplitPro computes balances from expenses on the fly using database views. Expenses are the source of truth, which keeps balances consistent and trustworthy. For self hosted deployments the efficiency of database aggregations is entirely sufficient, but please do report any performance issues.
-- Recurring transactions require `pg_cron`, which does not support cron ranges or lists.
-- Currency conversion accuracy and coverage depend on the selected provider.
-- Receipts are stored on local disk; make sure your uploads volume is persistent.
-
-## Supporting docs
-
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
-- [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md)
-- [docs/MIGRATING_FROM_V1.md](docs/MIGRATING_FROM_V1.md)
-- [docs/CURRENCY_CONVERSIONS.md](docs/CURRENCY_CONVERSIONS.md)
-- [docs/RECURRING_TRANSACTIONS.md](docs/RECURRING_TRANSACTIONS.md)
-- [docs/BANK_TRANSACTIONS.md](docs/BANK_TRANSACTIONS.md)
-- [docker/README.md](docker/README.md)
-
-## Versions
-
-SplitPro is for self hosting. To get the most recent features, build an image from source. Stabilized changes (GitHub releases) are available as Docker images on DockerHub and GHCR. The hosted instance at https://splitpro.app is managed in [oss-apps/split-pro-cloud](https://github.com/oss-apps/split-pro-cloud).
-
-## Why
-
-Splitwise is one of the best apps to add expenses and bills.
-
-We understand that every app needs to make money, after all, lots of effort has been put into Splitwise. The main problem is how they implemented this.
-
-Monetising on pro features or ads is fine, but asking money for adding expenses (core feature) is frustrating.
-
-We were searching for other open-source alternatives (Let's be honest, any closed-source product might do the same and we don't have any reason to believe otherwise).
-
-We managed to find a good app [spliit.app](https://spliit.app/) by [Sebastien Castiel](https://scastiel.dev/) but it's not a complete replacement and didn't suit my workflow sadly. Check it out to see if it fits you.
-
-## Translations
-
-The app translations are managed using [a Weblate project](https://hosted.weblate.org/projects/splitpro/).
-You can easily add missing translations, fix issues you find and a new language! Just be aware that a new language
-also needs to be added in the code and open an issue for that once you finish translating the files.
-Here is the current state of translation:
-
-<a href="https://hosted.weblate.org/engage/splitpro/">
-<img src="https://hosted.weblate.org/widget/splitpro/multi-auto.svg" alt="Translation status" />
-</a>
-
-## FAQ
-
-#### How numerically stable is the internal logic?
-
-All numbers are stored in the DB as `BigInt` data, with no floats what so ever, safeguarding your expenses from rounding errors or lack of precision. This holds true for currencies with large nominal values that might outgrow the safe range of JS number type.
-
-#### How are leftover pennies handled?
-
-In case of an expense that cannot be split evenly, leftover amounts are distributed deterministically across participants, based on amount and date.
-
-#### Currency rate providers
-
-See [docs/CURRENCY_CONVERSIONS.md](docs/CURRENCY_CONVERSIONS.md) for provider details and limits.
-
-## Getting started
-
-### Deployment with Docker
-
-We provide Docker images on DockerHub and GHCR.
-
-- https://hub.docker.com/r/ossapps/splitpro
-- https://ghcr.io/oss-apps/splitpro
-
-For setup instructions, see [docker/README.md](docker/README.md). For environment variables, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-### Deployment as Proxmox LXC
-
-Thanks to @johanngrobe there is now also a Proxmox Community Script available [here](https://community-scripts.org/scripts/split-pro).
-
-### Development and contributing
-
-See the [CONTRIBUTING.md](CONTRIBUTING.md) document.
-
-## Sponsors
-
-We are grateful for the support of our sponsors.
-
-### Our Sponsors
-
-<a href="https://hekuta.net/en" target="_blank">
-  <img src="https://avatars.githubusercontent.com/u/70084358?v=4" alt="hekuta" style="width:60px;height:60px;">
-</a>
-<a href="https://github.com/igorrrpawlowski"><img src="https:&#x2F;&#x2F;github.com&#x2F;igorrrpawlowski.png" width="60px" alt="User avatar: igorrrpawlowski" /></a>
-<a href="https://github.com/probeonstimpack"><img src="https:&#x2F;&#x2F;github.com&#x2F;probeonstimpack.png" width="60px" alt="User avatar: Marcel Szmeterowicz" /></a>
-<a href="https://github.com/mexicanhatman"><img src="https://avatars.githubusercontent.com/u/78694887?v=4" width="60px" alt="User avatar: mexicanhatman" /></a>
-<a href="https://github.com/felixdz"><img src="https://avatars.githubusercontent.com/u/11851415?v=4" width="60px" alt="User avatar: FelixDz" /></a>
-<a href="https://github.com/pchampio"><img src="https://avatars.githubusercontent.com/u/7476655?v=4" width="60px" alt="User avatar: pchampio" /></a>
-<a href="https://github.com/j4nsen"><img src="https://avatars.githubusercontent.com/u/3029093?v=4" width="60px" alt="User avatar: J4nsen" /></a>
-<a href="https://github.com/nachogrxdev"><img src="https://avatars.githubusercontent.com/u/36232789?v=4" width="60px" alt="User avatar: nachogrxdev" /></a>
-
-## Star History
-
-[![Star History Chart](https://star-history.dera.page/svg?repos=oss-apps/split-pro&type=Date)](https://star-history.dera.page/#oss-apps/split-pro&Date)
+Bug reports for this fork go to this repository's issues. Please do not report them upstream.

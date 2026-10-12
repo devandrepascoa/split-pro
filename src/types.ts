@@ -1,5 +1,5 @@
 import { type NextPage } from 'next';
-import { type User } from 'next-auth';
+import type { SessionUser as User } from '~/server/auth';
 import { z } from 'zod';
 import { type CurrencyCode } from './lib/currency';
 

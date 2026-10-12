@@ -1,7 +1,7 @@
 import i18nConfig from '@/next-i18next.config.js';
 import { clsx } from 'clsx';
-import { type Session } from 'next-auth';
-import { SessionProvider, useSession } from 'next-auth/react';
+import type { Session } from '~/server/auth';
+import { SessionProvider, useSession } from '~/lib/auth-client';
 import { appWithTranslation, useTranslation } from 'next-i18next';
 import { type AppType } from 'next/app';
 import { Poppins } from 'next/font/google';
@@ -9,6 +9,8 @@ import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { Toaster } from 'sonner';
+import { ErrorBoundary } from '~/components/ErrorBoundary';
+import { installGlobalErrorReporting } from '~/lib/report-client-error';
 import { LoadingSpinner } from '~/components/ui/spinner';
 import { ThemeProvider } from 'next-themes';
 import { CurrencyHelpersProvider } from '~/contexts/CurrencyHelpersContext';
@@ -28,6 +30,16 @@ const MyApp: AppType<{ session: Session | null }> = ({
   pageProps: { session, ...pageProps },
 }) => {
   const { t, ready } = useTranslation();
+
+  useEffect(() => {
+    installGlobalErrorReporting();
+  }, []);
+
+  useEffect(() => {
+    if ('serviceWorker' in navigator && 'production' === process.env.NODE_ENV) {
+      navigator.serviceWorker.register('/sw.js').catch(console.error);
+    }
+  }, []);
 
   if (!ready) {
     return (
@@ -82,18 +94,20 @@ const MyApp: AppType<{ session: Session | null }> = ({
         <meta property="og:url" content={baseUrl} />
         <meta property="og:image" content={`${baseUrl}/og_banner.png`} />
       </Head>
-      <SessionProvider session={session}>
-        <CurrencyHelpersProvider>
-          <ThemeProvider attribute="class" defaultTheme="dark">
-            <Toaster toastOptions={toastOptions} />
-            {(Component as NextPageWithUser).auth ? (
-              <Auth pageProps={pageProps} Page={Component as NextPageWithUser} />
-            ) : (
-              <Component {...pageProps} />
-            )}{' '}
-          </ThemeProvider>
-        </CurrencyHelpersProvider>
-      </SessionProvider>
+      <ErrorBoundary>
+        <SessionProvider session={session}>
+          <CurrencyHelpersProvider>
+            <ThemeProvider attribute="class" defaultTheme="dark">
+              <Toaster toastOptions={toastOptions} />
+              {(Component as NextPageWithUser).auth ? (
+                <Auth pageProps={pageProps} Page={Component as NextPageWithUser} />
+              ) : (
+                <Component {...pageProps} />
+              )}{' '}
+            </ThemeProvider>
+          </CurrencyHelpersProvider>
+        </SessionProvider>
+      </ErrorBoundary>
     </main>
   );
 };

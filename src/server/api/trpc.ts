@@ -8,13 +8,15 @@
  */
 
 import { TRPCError, initTRPC } from '@trpc/server';
-import { type CreateNextContextOptions } from '@trpc/server/adapters/next';
-import { type Session } from 'next-auth';
+import type { Session } from '~/server/auth';
 import superjson from 'superjson';
 import { ZodError, z } from 'zod';
 
 import { getServerAuthSession } from '~/server/auth';
+import { and, eq } from 'drizzle-orm';
+
 import { db } from '~/server/db';
+import { groupUsers } from '~/server/db/schema';
 
 /**
  * 1. CONTEXT
@@ -49,11 +51,9 @@ const createInnerTRPCContext = (opts: CreateContextOptions) => ({
  *
  * @see https://trpc.io/docs/context
  */
-export const createTRPCContext = async (opts: CreateNextContextOptions) => {
-  const { req, res } = opts;
-
-  // Get the session from the server using the getServerSession wrapper function
-  const session = await getServerAuthSession({ req, res });
+export const createTRPCContext = async (opts: { req: { headers: Headers } }) => {
+  const { req } = opts;
+  const session = await getServerAuthSession({ req });
 
   return createInnerTRPCContext({
     session,
@@ -119,7 +119,7 @@ export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
 
   return next({
     ctx: {
-      // infers the `session` as non-nullable
+      // Infers the `session` as non-nullable
       session: { ...ctx.session, user: ctx.session.user },
     },
   });
@@ -128,11 +128,8 @@ export const protectedProcedure = t.procedure.use(({ ctx, next }) => {
 export const groupProcedure = protectedProcedure
   .input(z.object({ groupId: z.number() }))
   .use(async ({ ctx, input: { groupId }, next }) => {
-    const groupUser = await ctx.db.groupUser.findFirst({
-      where: {
-        groupId,
-        userId: ctx.session.user.id,
-      },
+    const groupUser = await ctx.db.query.groupUsers.findFirst({
+      where: and(eq(groupUsers.groupId, groupId), eq(groupUsers.userId, ctx.session.user.id)),
     });
 
     if (!groupUser) {

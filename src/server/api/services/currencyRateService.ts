@@ -1,7 +1,10 @@
 import { format, getISODay, isToday, subDays } from 'date-fns';
 import { env } from '~/env';
 import type { CurrencyCode } from '~/lib/currency';
+import { and, eq } from 'drizzle-orm';
+
 import { db } from '~/server/db';
+import { cachedCurrencyRates } from '~/server/db/schema';
 
 export interface RateResponse {
   base: string;
@@ -80,39 +83,25 @@ abstract class CurrencyRateProvider {
   }
 
   private upsertCache(from: CurrencyCode, to: CurrencyCode, date: Date, rate: number) {
-    return db.cachedCurrencyRate.upsert({
-      where: {
-        from_to_date: { from, to, date },
-      },
-      create: {
-        from,
-        to,
-        date,
-        rate,
-        lastFetched: new Date(),
-      },
-      update: {
-        rate,
-        lastFetched: new Date(),
-      },
-    });
+    const now = new Date();
+    return db
+      .insert(cachedCurrencyRates)
+      .values({ from, to, date, rate, lastFetched: now })
+      .onConflictDoUpdate({
+        target: [cachedCurrencyRates.from, cachedCurrencyRates.to, cachedCurrencyRates.date],
+        set: { rate, lastFetched: now, updatedAt: now },
+      });
   }
 
   private async getCache(from: CurrencyCode, to: CurrencyCode, date: Date) {
-    const result = await db.cachedCurrencyRate.findUnique({
-      where: {
-        from_to_date: { from, to, date },
-      },
-    });
+    const key = and(
+      eq(cachedCurrencyRates.from, from),
+      eq(cachedCurrencyRates.to, to),
+      eq(cachedCurrencyRates.date, date),
+    );
+    const result = await db.query.cachedCurrencyRates.findFirst({ where: key });
     if (result) {
-      void db.cachedCurrencyRate.update({
-        where: {
-          from_to_date: { from, to, date },
-        },
-        data: {
-          lastFetched: new Date(),
-        },
-      });
+      void db.update(cachedCurrencyRates).set({ lastFetched: new Date() }).where(key);
     }
     return result;
   }

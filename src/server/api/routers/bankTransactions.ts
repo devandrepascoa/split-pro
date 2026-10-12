@@ -1,3 +1,6 @@
+import { eq } from 'drizzle-orm';
+
+import { users } from '~/server/db/schema';
 import { createTRPCRouter, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { whichBankConnectionConfigured } from '~/server/bankTransactionHelper';
@@ -35,14 +38,10 @@ export const bankTransactionsRouter = createTRPCRouter({
           throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to link to bank' });
         }
 
-        await ctx.db.user.update({
-          where: {
-            id: ctx.session.user.id,
-          },
-          data: {
-            obapiProviderId: res.institutionId,
-          },
-        });
+        await ctx.db
+          .update(users)
+          .set({ obapiProviderId: res.institutionId })
+          .where(eq(users.id, ctx.session.user.id));
 
         return res;
       }
@@ -77,14 +76,10 @@ export const bankTransactionsRouter = createTRPCRouter({
           });
         }
 
-        await ctx.db.user.update({
-          where: {
-            id: ctx.session.user.id,
-          },
-          data: {
-            obapiProviderId: res.accessToken,
-          },
-        });
+        await ctx.db
+          .update(users)
+          .set({ obapiProviderId: res.accessToken })
+          .where(eq(users.id, ctx.session.user.id));
 
         return res;
       }

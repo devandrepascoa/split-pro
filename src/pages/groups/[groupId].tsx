@@ -39,7 +39,9 @@ import { env } from '~/env';
 import { useTranslationWithUtils } from '~/hooks/useTranslationWithUtils';
 import { deserializeDefaultSplit } from '~/lib/defaultSplit';
 import { isCurrencyCode, parseCurrencyCode } from '~/lib/currency';
+import { eq } from 'drizzle-orm';
 import { db } from '~/server/db';
+import { groups } from '~/server/db/schema';
 import { type NextPageWithUser } from '~/types';
 import { api } from '~/utils/api';
 import { customServerSideTranslations } from '~/utils/i18n/server';
@@ -579,10 +581,9 @@ BalancePage.auth = true;
 export default BalancePage;
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
-  const group = await db.group.findFirst({
-    where: {
-      id: Number(context.query.groupId),
-    },
+  const group = await db.query.groups.findFirst({
+    where: eq(groups.id, Number(context.query.groupId)),
+    columns: { id: true },
   });
 
   if (!group) {

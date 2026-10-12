@@ -9,7 +9,7 @@ import {
   SiKeycloak,
 } from '@icons-pack/react-simple-icons';
 import { type GetServerSideProps, type NextPage } from 'next';
-import { type ClientSafeProvider, getProviders, signIn } from 'next-auth/react';
+import { signIn } from '~/lib/auth-client';
 import { type TFunction, useTranslation } from 'next-i18next';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -28,7 +28,11 @@ import {
 import { Input } from '~/components/ui/input';
 import { LoadingSpinner } from '~/components/ui/spinner';
 import { env } from '~/env';
-import { getServerAuthSession } from '~/server/auth';
+import {
+  type AuthProvider as ClientSafeProvider,
+  getAuthProviders,
+  getServerAuthSession,
+} from '~/server/auth';
 import { customServerSideTranslations } from '~/utils/i18n/server';
 import VerificationStep from './VerificationStep';
 
@@ -74,29 +78,14 @@ const Home: NextPage<{
     },
   });
 
-  // Client-side fallback for getProviders when server-side call fails
+  // Providers come from getServerSideProps; better-auth has no client provider listing.
   useEffect(() => {
-    if (serverProviders.length > 0) {
-      return;
+    if (0 === serverProviders.length) {
+      toast.error(t('errors.no_providers'), { duration: 8000 });
     }
-
-    void (async () => {
-      setIsLoadingProviders(true);
-      try {
-        const clientProviders = await getProviders();
-        if (clientProviders && Object.keys(clientProviders).length > 0) {
-          setProviders(Object.values(clientProviders));
-        } else {
-          throw new Error('No providers returned from getProviders()');
-        }
-      } catch (error) {
-        console.error('Error fetching providers client-side:', error);
-        toast.error(t('errors.no_providers'), { duration: 8000 });
-      } finally {
-        setIsLoadingProviders(false);
-      }
-    })();
-  }, [serverProviders.length, t]);
+    setProviders(serverProviders);
+    setIsLoadingProviders(false);
+  }, [serverProviders, t]);
 
   useEffect(() => {
     if (error) {
@@ -138,9 +127,10 @@ const Home: NextPage<{
     setEmailStatus('sending');
     const email = emailForm.getValues().email.toLowerCase();
     setShowVerificationStep(true);
-    await signIn('email', { email, callbackUrl, redirect: false });
+    // Email sign-in is disabled on this deployment (Google only).
+    void email;
     setEmailStatus('success');
-  }, [emailForm, setShowVerificationStep, callbackUrl]);
+  }, [emailForm, setShowVerificationStep]);
 
   useEffect(() => {
     const onPop = (e: PopStateEvent) => {
@@ -290,12 +280,7 @@ export default Home;
 
 export const getServerSideProps: GetServerSideProps = async (context) => {
   const session = await getServerAuthSession(context);
-  let providers: Record<string, ClientSafeProvider> | null = null;
-  try {
-    providers = await getProviders();
-  } catch (error) {
-    console.error(error);
-  }
+  const providers = getAuthProviders();
   const { callbackUrl, error } = context.query;
 
   if (session) {
@@ -315,7 +300,7 @@ export const getServerSideProps: GetServerSideProps = async (context) => {
       ...(await customServerSideTranslations(context.locale, ['common'])),
       error: typeof error === 'string' ? error : '',
       feedbackEmail: env.FEEDBACK_EMAIL ?? '',
-      providers: Object.values(providers ?? {}),
+      providers,
       callbackUrl: callbackUrl && !Array.isArray(callbackUrl) ? callbackUrl : '',
       oauthAutoRedirect: env.OAUTH_AUTO_REDIRECT,
     },
